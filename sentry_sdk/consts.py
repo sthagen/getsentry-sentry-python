@@ -76,7 +76,7 @@ class ClientConstructor(object):
         traces_sampler=None,  # type: Optional[TracesSampler]
         auto_enabling_integrations=True,  # type: bool
         auto_session_tracking=True,  # type: bool
-        send_client_reports=True,  # type: bool
+        send_client_reports=False,  # type: bool
         _experiments={},  # type: Experiments  # noqa: B006
     ):
         # type: (...) -> None
@@ -101,7 +101,7 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "1.3.1"
+VERSION = "1.4.2"
 SDK_INFO = {
     "name": "sentry.python",
     "version": VERSION,
