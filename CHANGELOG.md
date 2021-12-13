@@ -14,13 +14,18 @@ We recommend to pin your version requirements against `1.x.*` or `1.x.y`.
 Either one of the following is fine:
 
 ```
-sentry-sdk>=0.10.0,<0.11.0
-sentry-sdk==0.10.1
+sentry-sdk>=1.0.0,<2.0.0
+sentry-sdk==1.5.0
 ```
 
 A major release `N` implies the previous release `N-1` will no longer receive updates. We generally do not backport bugfixes to older versions unless they are security relevant. However, feel free to ask for backports of specific commits on the bugtracker.
 
-## Unreleased
+## 1.5.1
+
+- Fix django legacy url resolver regex substitution due to upstream CVE-2021-44420 fix #1272
+- Record lost `sample_rate` events only if tracing is enabled #1268
+- Fix gevent version parsing for non-numeric parts #1243
+- Record span and breadcrumb when Django opens db connection #1250
 
 ## 1.5.0
 
