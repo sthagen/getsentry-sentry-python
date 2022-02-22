@@ -1,24 +1,20 @@
-# Changelog and versioning
+# Changelog
 
-## Versioning Policy
+## 1.5.6
 
-This project follows [semver](https://semver.org/), with three additions:
+### Various fixes & improvements
 
-- Semver says that major version `0` can include breaking changes at any time. Still, it is common practice to assume that only `0.x` releases (minor versions) can contain breaking changes while `0.x.y` releases (patch versions) are used for backwards-compatible changes (bugfixes and features). This project also follows that practice.
-
-- All undocumented APIs are considered internal. They are not part of this contract.
-
-- Certain features (e.g. integrations) may be explicitly called out as "experimental" or "unstable" in the documentation. They come with their own versioning policy described in the documentation.
-
-We recommend to pin your version requirements against `1.x.*` or `1.x.y`.
-Either one of the following is fine:
-
-```
-sentry-sdk>=1.0.0,<2.0.0
-sentry-sdk==1.5.0
-```
-
-A major release `N` implies the previous release `N-1` will no longer receive updates. We generally do not backport bugfixes to older versions unless they are security relevant. However, feel free to ask for backports of specific commits on the bugtracker.
+- Create feature.yml (#1350) by @vladanpaunovic
+- Update contribution guide (#1346) by @antonpirker
+- chore: add bug issue template (#1345) by @vladanpaunovic
+- Added default value for auto_session_tracking (#1337) by @antonpirker
+- docs(readme): reordered content (#1343) by @antonpirker
+- fix(tests): Removed unsupported Django 1.6 from tests to avoid confusion (#1338) by @antonpirker
+- Group captured warnings under separate issues (#1324) by @mnito
+- build(changelogs): Use automated changelogs from Craft (#1340) by @BYK
+- fix(aiohttp): AioHttpIntegration sentry_app_handle() now ignores ConnectionResetError (#1331) by @cmalek
+- meta: Remove black GH action (#1339) by @sl0thentr0py
+- feat(flask): Add `sentry_trace()` template helper (#1336) by @BYK
 
 ## 1.5.5
 
