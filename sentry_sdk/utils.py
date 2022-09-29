@@ -7,11 +7,12 @@ import sys
 import threading
 import subprocess
 import re
+import time
 
 from datetime import datetime
 
 import sentry_sdk
-from sentry_sdk._compat import urlparse, text_type, implements_str, PY2
+from sentry_sdk._compat import urlparse, text_type, implements_str, PY2, PY33, PY37
 
 from sentry_sdk._types import MYPY
 
@@ -39,7 +40,7 @@ epoch = datetime(1970, 1, 1)
 # The logger is created here but initialized in the debug support module
 logger = logging.getLogger("sentry_sdk.errors")
 
-MAX_STRING_LENGTH = 512
+MAX_STRING_LENGTH = 1024
 BASE64_ALPHABET = re.compile(r"^[a-zA-Z0-9/+=]*$")
 
 
@@ -861,7 +862,7 @@ def _get_contextvars():
             # `aiocontextvars` is absolutely required for functional
             # contextvars on Python 3.6.
             try:
-                from aiocontextvars import ContextVar  # noqa
+                from aiocontextvars import ContextVar
 
                 return True, ContextVar
             except ImportError:
@@ -1010,3 +1011,24 @@ def from_base64(base64_string):
         )
 
     return utf8_string
+
+
+if PY37:
+
+    def nanosecond_time():
+        # type: () -> int
+        return time.perf_counter_ns()
+
+elif PY33:
+
+    def nanosecond_time():
+        # type: () -> int
+
+        return int(time.perf_counter() * 1e9)
+
+else:
+
+    def nanosecond_time():
+        # type: () -> int
+
+        raise AttributeError
