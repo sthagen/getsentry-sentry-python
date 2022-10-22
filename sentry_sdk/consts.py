@@ -104,13 +104,14 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "1.9.10"
+VERSION = "1.10.1"
 
 
 class OP:
     DB = "db"
     DB_REDIS = "db.redis"
     EVENT_DJANGO = "event.django"
+    FUNCTION = "function"
     FUNCTION_AWS = "function.aws"
     FUNCTION_GCP = "function.gcp"
     HTTP_CLIENT = "http.client"
@@ -118,6 +119,8 @@ class OP:
     HTTP_SERVER = "http.server"
     MIDDLEWARE_DJANGO = "middleware.django"
     MIDDLEWARE_STARLETTE = "middleware.starlette"
+    MIDDLEWARE_STARLETTE_RECEIVE = "middleware.starlette.receive"
+    MIDDLEWARE_STARLETTE_SEND = "middleware.starlette.send"
     QUEUE_SUBMIT_CELERY = "queue.submit.celery"
     QUEUE_TASK_CELERY = "queue.task.celery"
     QUEUE_TASK_RQ = "queue.task.rq"

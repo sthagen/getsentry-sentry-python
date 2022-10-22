@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import functools
 import json
 import os
 
@@ -30,6 +31,8 @@ from starlette.authentication import (
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.testclient import TestClient
+
+STARLETTE_VERSION = tuple([int(x) for x in starlette.__version__.split(".")])
 
 PICTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "photo.jpg")
 
@@ -150,6 +153,65 @@ class AsyncIterator:
             return bytes([next(self.iter)])
         except StopIteration:
             raise StopAsyncIteration
+
+
+class SampleMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # only handle http requests
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def do_stuff(message):
+            if message["type"] == "http.response.start":
+                # do something here.
+                pass
+
+            await send(message)
+
+        await self.app(scope, receive, do_stuff)
+
+
+class SampleReceiveSendMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        message = await receive()
+        assert message
+        assert message["type"] == "http.request"
+
+        send_output = await send({"type": "something-unimportant"})
+        assert send_output is None
+
+        await self.app(scope, receive, send)
+
+
+class SamplePartialReceiveSendMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        message = await receive()
+        assert message
+        assert message["type"] == "http.request"
+
+        send_output = await send({"type": "something-unimportant"})
+        assert send_output is None
+
+        async def my_receive(*args, **kwargs):
+            pass
+
+        async def my_send(*args, **kwargs):
+            pass
+
+        partial_receive = functools.partial(my_receive)
+        partial_send = functools.partial(my_send)
+
+        await self.app(scope, partial_receive, partial_send)
 
 
 @pytest.mark.asyncio
@@ -544,6 +606,173 @@ def test_middleware_spans(sentry_init, capture_events):
             assert span["description"] == expected[idx]
             assert span["tags"]["starlette.middleware_name"] == expected[idx]
             idx += 1
+
+
+def test_middleware_callback_spans(sentry_init, capture_events):
+    sentry_init(
+        traces_sample_rate=1.0,
+        integrations=[StarletteIntegration()],
+    )
+    starlette_app = starlette_app_factory(middleware=[Middleware(SampleMiddleware)])
+    events = capture_events()
+
+    client = TestClient(starlette_app, raise_server_exceptions=False)
+    try:
+        client.get("/message", auth=("Gabriela", "hello123"))
+    except Exception:
+        pass
+
+    (_, transaction_event) = events
+
+    expected = [
+        {
+            "op": "middleware.starlette",
+            "description": "ServerErrorMiddleware",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+        {
+            "op": "middleware.starlette",
+            "description": "SampleMiddleware",
+            "tags": {"starlette.middleware_name": "SampleMiddleware"},
+        },
+        {
+            "op": "middleware.starlette",
+            "description": "ExceptionMiddleware",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "SampleMiddleware.__call__.<locals>.do_stuff",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "ServerErrorMiddleware.__call__.<locals>._send",
+            "tags": {"starlette.middleware_name": "SampleMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "_ASGIAdapter.send.<locals>.send"
+            if STARLETTE_VERSION < (0, 21)
+            else "_TestClientTransport.handle_request.<locals>.send",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "SampleMiddleware.__call__.<locals>.do_stuff",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "ServerErrorMiddleware.__call__.<locals>._send",
+            "tags": {"starlette.middleware_name": "SampleMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "_ASGIAdapter.send.<locals>.send"
+            if STARLETTE_VERSION < (0, 21)
+            else "_TestClientTransport.handle_request.<locals>.send",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+    ]
+
+    idx = 0
+    for span in transaction_event["spans"]:
+        assert span["op"] == expected[idx]["op"]
+        assert span["description"] == expected[idx]["description"]
+        assert span["tags"] == expected[idx]["tags"]
+        idx += 1
+
+
+def test_middleware_receive_send(sentry_init, capture_events):
+    sentry_init(
+        traces_sample_rate=1.0,
+        integrations=[StarletteIntegration()],
+    )
+    starlette_app = starlette_app_factory(
+        middleware=[Middleware(SampleReceiveSendMiddleware)]
+    )
+
+    client = TestClient(starlette_app, raise_server_exceptions=False)
+    try:
+        # NOTE: the assert statements checking
+        # for correct behaviour are in `SampleReceiveSendMiddleware`!
+        client.get("/message", auth=("Gabriela", "hello123"))
+    except Exception:
+        pass
+
+
+def test_middleware_partial_receive_send(sentry_init, capture_events):
+    sentry_init(
+        traces_sample_rate=1.0,
+        integrations=[StarletteIntegration()],
+    )
+    starlette_app = starlette_app_factory(
+        middleware=[Middleware(SamplePartialReceiveSendMiddleware)]
+    )
+    events = capture_events()
+
+    client = TestClient(starlette_app, raise_server_exceptions=False)
+    try:
+        client.get("/message", auth=("Gabriela", "hello123"))
+    except Exception:
+        pass
+
+    (_, transaction_event) = events
+
+    expected = [
+        {
+            "op": "middleware.starlette",
+            "description": "ServerErrorMiddleware",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+        {
+            "op": "middleware.starlette",
+            "description": "SamplePartialReceiveSendMiddleware",
+            "tags": {"starlette.middleware_name": "SamplePartialReceiveSendMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.receive",
+            "description": "_ASGIAdapter.send.<locals>.receive"
+            if STARLETTE_VERSION < (0, 21)
+            else "_TestClientTransport.handle_request.<locals>.receive",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "ServerErrorMiddleware.__call__.<locals>._send",
+            "tags": {"starlette.middleware_name": "SamplePartialReceiveSendMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "_ASGIAdapter.send.<locals>.send"
+            if STARLETTE_VERSION < (0, 21)
+            else "_TestClientTransport.handle_request.<locals>.send",
+            "tags": {"starlette.middleware_name": "ServerErrorMiddleware"},
+        },
+        {
+            "op": "middleware.starlette",
+            "description": "ExceptionMiddleware",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "functools.partial(<function SamplePartialReceiveSendMiddleware.__call__.<locals>.my_send at ",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+        {
+            "op": "middleware.starlette.send",
+            "description": "functools.partial(<function SamplePartialReceiveSendMiddleware.__call__.<locals>.my_send at ",
+            "tags": {"starlette.middleware_name": "ExceptionMiddleware"},
+        },
+    ]
+
+    idx = 0
+    for span in transaction_event["spans"]:
+        assert span["op"] == expected[idx]["op"]
+        assert span["description"].startswith(expected[idx]["description"])
+        assert span["tags"] == expected[idx]["tags"]
+        idx += 1
 
 
 def test_last_event_id(sentry_init, capture_events):

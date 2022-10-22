@@ -45,7 +45,7 @@ if MYPY:
     from typing_extensions import TypedDict
     import sentry_sdk.tracing
 
-    RawSampleData = Tuple[int, Sequence[Tuple[int, Sequence[RawFrameData]]]]
+    RawSampleData = Tuple[int, Sequence[Tuple[str, Sequence[RawFrameData]]]]
 
     ProcessedStack = Tuple[int, ...]
 
@@ -111,17 +111,16 @@ def setup_profiler(options):
     # To buffer samples for `buffer_secs` at `frequency` Hz, we need
     # a capcity of `buffer_secs * frequency`.
     _sample_buffer = SampleBuffer(capacity=buffer_secs * frequency)
-    _sampler = _init_sample_stack_fn(_sample_buffer)
 
     profiler_mode = options["_experiments"].get("profiler_mode", SigprofScheduler.mode)
     if profiler_mode == SigprofScheduler.mode:
-        _scheduler = SigprofScheduler(sampler=_sampler, frequency=frequency)
+        _scheduler = SigprofScheduler(sample_buffer=_sample_buffer, frequency=frequency)
     elif profiler_mode == SigalrmScheduler.mode:
-        _scheduler = SigalrmScheduler(sampler=_sampler, frequency=frequency)
+        _scheduler = SigalrmScheduler(sample_buffer=_sample_buffer, frequency=frequency)
     elif profiler_mode == SleepScheduler.mode:
-        _scheduler = SleepScheduler(sampler=_sampler, frequency=frequency)
+        _scheduler = SleepScheduler(sample_buffer=_sample_buffer, frequency=frequency)
     elif profiler_mode == EventScheduler.mode:
-        _scheduler = EventScheduler(sampler=_sampler, frequency=frequency)
+        _scheduler = EventScheduler(sample_buffer=_sample_buffer, frequency=frequency)
     else:
         raise ValueError("Unknown profiler mode: {}".format(profiler_mode))
     _scheduler.setup()
@@ -140,29 +139,6 @@ def teardown_profiler():
 
     _sample_buffer = None
     _scheduler = None
-
-
-def _init_sample_stack_fn(buffer):
-    # type: (SampleBuffer) -> Callable[..., None]
-
-    def _sample_stack(*args, **kwargs):
-        # type: (*Any, **Any) -> None
-        """
-        Take a sample of the stack on all the threads in the process.
-        This should be called at a regular interval to collect samples.
-        """
-
-        buffer.write(
-            (
-                nanosecond_time(),
-                [
-                    (tid, extract_stack(frame))
-                    for tid, frame in sys._current_frames().items()
-                ],
-            )
-        )
-
-    return _sample_stack
 
 
 # We want to impose a stack depth limit so that samples aren't too large.
@@ -186,14 +162,14 @@ def extract_stack(frame, max_stack_depth=MAX_STACK_DEPTH):
         stack.append(frame)
         frame = frame.f_back
 
-    return [
+    return tuple(
         RawFrameData(
             function=get_frame_name(frame),
             abs_path=frame.f_code.co_filename,
             lineno=frame.f_lineno,
         )
         for frame in stack
-    ]
+    )
 
 
 def get_frame_name(frame):
@@ -202,14 +178,21 @@ def get_frame_name(frame):
     # in 3.11+, there is a frame.f_code.co_qualname that
     # we should consider using instead where possible
 
+    f_code = frame.f_code
     # co_name only contains the frame name.  If the frame was a method,
     # the class name will NOT be included.
-    name = frame.f_code.co_name
+    name = f_code.co_name
 
     # if it was a method, we can get the class name by inspecting
     # the f_locals for the `self` argument
     try:
-        if "self" in frame.f_locals:
+        if (
+            # the co_varnames start with the frame's positional arguments
+            # and we expect the first to be `self` if its an instance method
+            f_code.co_varnames
+            and f_code.co_varnames[0] == "self"
+            and "self" in frame.f_locals
+        ):
             return "{}.{}".format(frame.f_locals["self"].__class__.__name__, name)
     except AttributeError:
         pass
@@ -217,7 +200,13 @@ def get_frame_name(frame):
     # if it was a class method, (decorated with `@classmethod`)
     # we can get the class name by inspecting the f_locals for the `cls` argument
     try:
-        if "cls" in frame.f_locals:
+        if (
+            # the co_varnames start with the frame's positional arguments
+            # and we expect the first to be `cls` if its a class method
+            f_code.co_varnames
+            and f_code.co_varnames[0] == "cls"
+            and "cls" in frame.f_locals
+        ):
             return "{}.{}".format(frame.f_locals["cls"].__name__, name)
     except AttributeError:
         pass
@@ -229,8 +218,14 @@ def get_frame_name(frame):
 
 
 class Profile(object):
-    def __init__(self, transaction, hub=None):
-        # type: (sentry_sdk.tracing.Transaction, Optional[sentry_sdk.Hub]) -> None
+    def __init__(
+        self,
+        scheduler,  # type: Scheduler
+        transaction,  # type: sentry_sdk.tracing.Transaction
+        hub=None,  # type: Optional[sentry_sdk.Hub]
+    ):
+        # type: (...) -> None
+        self.scheduler = scheduler
         self.transaction = transaction
         self.hub = hub
         self._start_ns = None  # type: Optional[int]
@@ -240,19 +235,16 @@ class Profile(object):
 
     def __enter__(self):
         # type: () -> None
-        assert _scheduler is not None
         self._start_ns = nanosecond_time()
-        _scheduler.start_profiling()
+        self.scheduler.start_profiling()
 
     def __exit__(self, ty, value, tb):
         # type: (Optional[Any], Optional[Any], Optional[Any]) -> None
-        assert _scheduler is not None
-        _scheduler.stop_profiling()
+        self.scheduler.stop_profiling()
         self._stop_ns = nanosecond_time()
 
     def to_json(self, event_opt):
         # type: (Any) -> Dict[str, Any]
-        assert _sample_buffer is not None
         assert self._start_ns is not None
         assert self._stop_ns is not None
 
@@ -260,7 +252,9 @@ class Profile(object):
             "environment": event_opt.get("environment"),
             "event_id": uuid.uuid4().hex,
             "platform": "python",
-            "profile": _sample_buffer.slice_profile(self._start_ns, self._stop_ns),
+            "profile": self.scheduler.sample_buffer.slice_profile(
+                self._start_ns, self._stop_ns
+            ),
             "release": event_opt.get("release", ""),
             "timestamp": event_opt["timestamp"],
             "version": "1",
@@ -330,7 +324,7 @@ class SampleBuffer(object):
     def slice_profile(self, start_ns, stop_ns):
         # type: (int, int) -> ProcessedProfile
         samples = []  # type: List[ProcessedSample]
-        stacks = dict()  # type: Dict[ProcessedStack, int]
+        stacks = dict()  # type: Dict[int, int]
         stacks_list = list()  # type: List[ProcessedStack]
         frames = dict()  # type: Dict[RawFrameData, int]
         frames_list = list()  # type: List[ProcessedFrame]
@@ -340,39 +334,44 @@ class SampleBuffer(object):
         #
         # Is it safe to assume that the samples are always in
         # chronological order and binary search the buffer?
-        for raw_sample in self.buffer:
-            if raw_sample is None:
-                continue
-
-            ts = raw_sample[0]
+        for ts, sample in filter(None, self.buffer):
             if start_ns > ts or ts > stop_ns:
                 continue
 
-            for tid, stack in raw_sample[1]:
-                current_stack = []
+            elapsed_since_start_ns = str(ts - start_ns)
 
-                for frame in stack:
-                    if frame not in frames:
-                        frames[frame] = len(frames)
-                        frames_list.append(
-                            {
-                                "function": frame.function,
-                                "filename": frame.abs_path,
-                                "lineno": frame.lineno,
-                            }
-                        )
-                    current_stack.append(frames[frame])
+            for tid, stack in sample:
+                # Instead of mapping the stack into frame ids and hashing
+                # that as a tuple, we can directly hash the stack.
+                # This saves us from having to generate yet another list.
+                # Additionally, using the stack as the key directly is
+                # costly because the stack can be large, so we pre-hash
+                # the stack, and use the hash as the key as this will be
+                # needed a few times to improve performance.
+                hashed_stack = hash(stack)
 
-                current_stack = tuple(current_stack)
-                if current_stack not in stacks:
-                    stacks[current_stack] = len(stacks)
-                    stacks_list.append(current_stack)
+                # Check if the stack is indexed first, this lets us skip
+                # indexing frames if it's not necessary
+                if hashed_stack not in stacks:
+                    for frame in stack:
+                        if frame not in frames:
+                            frames[frame] = len(frames)
+                            frames_list.append(
+                                {
+                                    "function": frame.function,
+                                    "filename": frame.abs_path,
+                                    "lineno": frame.lineno,
+                                }
+                            )
+
+                    stacks[hashed_stack] = len(stacks)
+                    stacks_list.append(tuple(frames[frame] for frame in stack))
 
                 samples.append(
                     {
-                        "elapsed_since_start_ns": str(ts - start_ns),
-                        "thread_id": str(tid),
-                        "stack_id": stacks[current_stack],
+                        "elapsed_since_start_ns": elapsed_since_start_ns,
+                        "thread_id": tid,
+                        "stack_id": stacks[hashed_stack],
                     }
                 )
 
@@ -381,7 +380,7 @@ class SampleBuffer(object):
         # will not have any metadata associated with it.
         thread_metadata = {
             str(thread.ident): {
-                "name": thread.name,
+                "name": str(thread.name),
             }
             for thread in threading.enumerate()
         }  # type: Dict[str, ProcessedThreadMetadata]
@@ -393,13 +392,36 @@ class SampleBuffer(object):
             "thread_metadata": thread_metadata,
         }
 
+    def make_sampler(self):
+        # type: () -> Callable[..., None]
+
+        def _sample_stack(*args, **kwargs):
+            # type: (*Any, **Any) -> None
+            """
+            Take a sample of the stack on all the threads in the process.
+            This should be called at a regular interval to collect samples.
+            """
+
+            self.write(
+                (
+                    nanosecond_time(),
+                    [
+                        (str(tid), extract_stack(frame))
+                        for tid, frame in sys._current_frames().items()
+                    ],
+                )
+            )
+
+        return _sample_stack
+
 
 class Scheduler(object):
     mode = "unknown"
 
-    def __init__(self, sampler, frequency):
-        # type: (Callable[..., None], int) -> None
-        self.sampler = sampler
+    def __init__(self, sample_buffer, frequency):
+        # type: (SampleBuffer, int) -> None
+        self.sample_buffer = sample_buffer
+        self.sampler = sample_buffer.make_sampler()
         self._lock = threading.Lock()
         self._count = 0
         self._interval = 1.0 / frequency
@@ -434,9 +456,11 @@ class ThreadScheduler(Scheduler):
     mode = "thread"
     name = None  # type: Optional[str]
 
-    def __init__(self, sampler, frequency):
-        # type: (Callable[..., None], int) -> None
-        super(ThreadScheduler, self).__init__(sampler=sampler, frequency=frequency)
+    def __init__(self, sample_buffer, frequency):
+        # type: (SampleBuffer, int) -> None
+        super(ThreadScheduler, self).__init__(
+            sample_buffer=sample_buffer, frequency=frequency
+        )
         self.stop_events = Queue()
 
     def setup(self):
@@ -703,7 +727,8 @@ def start_profiling(transaction, hub=None):
 
     # if profiling was not enabled, this should be a noop
     if _should_profile(transaction, hub):
-        with Profile(transaction, hub=hub):
+        assert _scheduler is not None
+        with Profile(_scheduler, transaction, hub=hub):
             yield
     else:
         yield
