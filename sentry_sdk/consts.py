@@ -20,6 +20,7 @@ if MYPY:
         Event,
         EventProcessor,
         TracesSampler,
+        TransactionProcessor,
     )
 
     # Experiments are feature flags to enable and disable certain unstable SDK
@@ -42,6 +43,8 @@ if MYPY:
 
 DEFAULT_QUEUE_SIZE = 100
 DEFAULT_MAX_BREADCRUMBS = 100
+
+SENSITIVE_DATA_SUBSTITUTE = "[Filtered]"
 
 
 class INSTRUMENTER:
@@ -117,6 +120,7 @@ class ClientConstructor(object):
         _experiments={},  # type: Experiments  # noqa: B006
         proxy_headers=None,  # type: Optional[Dict[str, str]]
         instrumenter=INSTRUMENTER.SENTRY,  # type: Optional[str]
+        before_send_transaction=None,  # type: Optional[TransactionProcessor]
     ):
         # type: (...) -> None
         pass

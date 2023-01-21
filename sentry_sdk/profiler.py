@@ -24,7 +24,7 @@ from collections import deque
 from contextlib import contextmanager
 
 import sentry_sdk
-from sentry_sdk._compat import PY33
+from sentry_sdk._compat import PY33, PY311
 from sentry_sdk._types import MYPY
 from sentry_sdk.utils import (
     filename_for_module,
@@ -46,7 +46,6 @@ if MYPY:
     from typing import Sequence
     from typing import Tuple
     from typing_extensions import TypedDict
-    import sentry_sdk.scope
     import sentry_sdk.tracing
 
     ThreadId = str
@@ -104,6 +103,20 @@ if MYPY:
         },
     )
 
+    ProfileContext = TypedDict(
+        "ProfileContext",
+        {"profile_id": str},
+    )
+
+try:
+    from gevent.monkey import is_module_patched  # type: ignore
+except ImportError:
+
+    def is_module_patched(*args, **kwargs):
+        # type: (*Any, **Any) -> bool
+        # unable to import from gevent means no modules have been patched
+        return False
+
 
 _scheduler = None  # type: Optional[Scheduler]
 
@@ -128,11 +141,31 @@ def setup_profiler(options):
 
     frequency = 101
 
-    profiler_mode = options["_experiments"].get("profiler_mode", SleepScheduler.mode)
-    if profiler_mode == SleepScheduler.mode:
-        _scheduler = SleepScheduler(frequency=frequency)
+    if is_module_patched("threading") or is_module_patched("_thread"):
+        # If gevent has patched the threading modules then we cannot rely on
+        # them to spawn a native thread for sampling.
+        # Instead we default to the GeventScheduler which is capable of
+        # spawning native threads within gevent.
+        default_profiler_mode = GeventScheduler.mode
+    else:
+        default_profiler_mode = ThreadScheduler.mode
+
+    profiler_mode = options["_experiments"].get("profiler_mode", default_profiler_mode)
+
+    if (
+        profiler_mode == ThreadScheduler.mode
+        # for legacy reasons, we'll keep supporting sleep mode for this scheduler
+        or profiler_mode == "sleep"
+    ):
+        _scheduler = ThreadScheduler(frequency=frequency)
+    elif profiler_mode == GeventScheduler.mode:
+        try:
+            _scheduler = GeventScheduler(frequency=frequency)
+        except ImportError:
+            raise ValueError("Profiler mode: {} is not available".format(profiler_mode))
     else:
         raise ValueError("Unknown profiler mode: {}".format(profiler_mode))
+
     _scheduler.setup()
 
     atexit.register(teardown_profiler)
@@ -241,55 +274,60 @@ def extract_frame(frame, cwd):
     )
 
 
-def get_frame_name(frame):
-    # type: (FrameType) -> str
+if PY311:
 
-    # in 3.11+, there is a frame.f_code.co_qualname that
-    # we should consider using instead where possible
+    def get_frame_name(frame):
+        # type: (FrameType) -> str
+        return frame.f_code.co_qualname  # type: ignore
 
-    f_code = frame.f_code
-    co_varnames = f_code.co_varnames
+else:
 
-    # co_name only contains the frame name.  If the frame was a method,
-    # the class name will NOT be included.
-    name = f_code.co_name
+    def get_frame_name(frame):
+        # type: (FrameType) -> str
 
-    # if it was a method, we can get the class name by inspecting
-    # the f_locals for the `self` argument
-    try:
-        if (
-            # the co_varnames start with the frame's positional arguments
-            # and we expect the first to be `self` if its an instance method
-            co_varnames
-            and co_varnames[0] == "self"
-            and "self" in frame.f_locals
-        ):
-            for cls in frame.f_locals["self"].__class__.__mro__:
-                if name in cls.__dict__:
-                    return "{}.{}".format(cls.__name__, name)
-    except AttributeError:
-        pass
+        f_code = frame.f_code
+        co_varnames = f_code.co_varnames
 
-    # if it was a class method, (decorated with `@classmethod`)
-    # we can get the class name by inspecting the f_locals for the `cls` argument
-    try:
-        if (
-            # the co_varnames start with the frame's positional arguments
-            # and we expect the first to be `cls` if its a class method
-            co_varnames
-            and co_varnames[0] == "cls"
-            and "cls" in frame.f_locals
-        ):
-            for cls in frame.f_locals["cls"].__mro__:
-                if name in cls.__dict__:
-                    return "{}.{}".format(cls.__name__, name)
-    except AttributeError:
-        pass
+        # co_name only contains the frame name.  If the frame was a method,
+        # the class name will NOT be included.
+        name = f_code.co_name
 
-    # nothing we can do if it is a staticmethod (decorated with @staticmethod)
+        # if it was a method, we can get the class name by inspecting
+        # the f_locals for the `self` argument
+        try:
+            if (
+                # the co_varnames start with the frame's positional arguments
+                # and we expect the first to be `self` if its an instance method
+                co_varnames
+                and co_varnames[0] == "self"
+                and "self" in frame.f_locals
+            ):
+                for cls in frame.f_locals["self"].__class__.__mro__:
+                    if name in cls.__dict__:
+                        return "{}.{}".format(cls.__name__, name)
+        except AttributeError:
+            pass
 
-    # we've done all we can, time to give up and return what we have
-    return name
+        # if it was a class method, (decorated with `@classmethod`)
+        # we can get the class name by inspecting the f_locals for the `cls` argument
+        try:
+            if (
+                # the co_varnames start with the frame's positional arguments
+                # and we expect the first to be `cls` if its a class method
+                co_varnames
+                and co_varnames[0] == "cls"
+                and "cls" in frame.f_locals
+            ):
+                for cls in frame.f_locals["cls"].__mro__:
+                    if name in cls.__dict__:
+                        return "{}.{}".format(cls.__name__, name)
+        except AttributeError:
+            pass
+
+        # nothing we can do if it is a staticmethod (decorated with @staticmethod)
+
+        # we've done all we can, time to give up and return what we have
+        return name
 
 
 MAX_PROFILE_DURATION_NS = int(3e10)  # 30 seconds
@@ -300,13 +338,17 @@ class Profile(object):
         self,
         scheduler,  # type: Scheduler
         transaction,  # type: sentry_sdk.tracing.Transaction
+        hub=None,  # type: Optional[sentry_sdk.Hub]
     ):
         # type: (...) -> None
         self.scheduler = scheduler
         self.transaction = transaction
+        self.hub = hub
+        self.active_thread_id = None  # type: Optional[int]
         self.start_ns = 0  # type: int
         self.stop_ns = 0  # type: int
         self.active = False  # type: bool
+        self.event_id = uuid.uuid4().hex  # type: str
 
         self.indexed_frames = {}  # type: Dict[RawFrame, int]
         self.indexed_stacks = {}  # type: Dict[RawStackId, int]
@@ -316,8 +358,20 @@ class Profile(object):
 
         transaction._profile = self
 
+    def get_profile_context(self):
+        # type: () -> ProfileContext
+        return {"profile_id": self.event_id}
+
     def __enter__(self):
         # type: () -> None
+        hub = self.hub or sentry_sdk.Hub.current
+
+        _, scope = hub._stack[-1]
+        old_profile = scope.profile
+        scope.profile = self
+
+        self._context_manager_state = (hub, scope, old_profile)
+
         self.start_ns = nanosecond_time()
         self.scheduler.start_profiling(self)
 
@@ -325,6 +379,11 @@ class Profile(object):
         # type: (Optional[Any], Optional[Any], Optional[Any]) -> None
         self.scheduler.stop_profiling(self)
         self.stop_ns = nanosecond_time()
+
+        _, scope, old_profile = self._context_manager_state
+        del self._context_manager_state
+
+        scope.profile = old_profile
 
     def write(self, ts, sample):
         # type: (int, RawSample) -> None
@@ -385,21 +444,17 @@ class Profile(object):
             "thread_metadata": thread_metadata,
         }
 
-    def to_json(self, event_opt, options, scope):
-        # type: (Any, Dict[str, Any], Optional[sentry_sdk.scope.Scope]) -> Dict[str, Any]
-
+    def to_json(self, event_opt, options):
+        # type: (Any, Dict[str, Any]) -> Dict[str, Any]
         profile = self.process()
 
         handle_in_app_impl(
             profile["frames"], options["in_app_exclude"], options["in_app_include"]
         )
 
-        # the active thread id from the scope always take priorty if it exists
-        active_thread_id = None if scope is None else scope.active_thread_id
-
         return {
             "environment": event_opt.get("environment"),
-            "event_id": uuid.uuid4().hex,
+            "event_id": self.event_id,
             "platform": "python",
             "profile": profile,
             "release": event_opt.get("release", ""),
@@ -430,8 +485,8 @@ class Profile(object):
                     "trace_id": self.transaction.trace_id,
                     "active_thread_id": str(
                         self.transaction._active_thread_id
-                        if active_thread_id is None
-                        else active_thread_id
+                        if self.active_thread_id is None
+                        else self.active_thread_id
                     ),
                 }
             ],
@@ -444,6 +499,11 @@ class Scheduler(object):
     def __init__(self, frequency):
         # type: (int) -> None
         self.interval = 1.0 / frequency
+
+        self.sampler = self.make_sampler()
+
+        self.new_profiles = deque()  # type: Deque[Profile]
+        self.active_profiles = set()  # type: Set[Profile]
 
     def __enter__(self):
         # type: () -> Scheduler
@@ -464,60 +524,12 @@ class Scheduler(object):
 
     def start_profiling(self, profile):
         # type: (Profile) -> None
-        raise NotImplementedError
-
-    def stop_profiling(self, profile):
-        # type: (Profile) -> None
-        raise NotImplementedError
-
-
-class ThreadScheduler(Scheduler):
-    """
-    This abstract scheduler is based on running a daemon thread that will call
-    the sampler at a regular interval.
-    """
-
-    mode = "thread"
-    name = None  # type: Optional[str]
-
-    def __init__(self, frequency):
-        # type: (int) -> None
-        super(ThreadScheduler, self).__init__(frequency=frequency)
-
-        self.sampler = self.make_sampler()
-
-        # used to signal to the thread that it should stop
-        self.event = threading.Event()
-
-        # make sure the thread is a daemon here otherwise this
-        # can keep the application running after other threads
-        # have exited
-        self.thread = threading.Thread(name=self.name, target=self.run, daemon=True)
-
-        self.new_profiles = deque()  # type: Deque[Profile]
-        self.active_profiles = set()  # type: Set[Profile]
-
-    def setup(self):
-        # type: () -> None
-        self.thread.start()
-
-    def teardown(self):
-        # type: () -> None
-        self.event.set()
-        self.thread.join()
-
-    def start_profiling(self, profile):
-        # type: (Profile) -> None
         profile.active = True
         self.new_profiles.append(profile)
 
     def stop_profiling(self, profile):
         # type: (Profile) -> None
         profile.active = False
-
-    def run(self):
-        # type: () -> None
-        raise NotImplementedError
 
     def make_sampler(self):
         # type: () -> Callable[..., None]
@@ -600,14 +612,99 @@ class ThreadScheduler(Scheduler):
         return _sample_stack
 
 
-class SleepScheduler(ThreadScheduler):
+class ThreadScheduler(Scheduler):
     """
-    This scheduler uses time.sleep to wait the required interval before calling
-    the sampling function.
+    This scheduler is based on running a daemon thread that will call
+    the sampler at a regular interval.
     """
 
-    mode = "sleep"
-    name = "sentry.profiler.SleepScheduler"
+    mode = "thread"
+    name = "sentry.profiler.ThreadScheduler"
+
+    def __init__(self, frequency):
+        # type: (int) -> None
+        super(ThreadScheduler, self).__init__(frequency=frequency)
+
+        # used to signal to the thread that it should stop
+        self.event = threading.Event()
+
+        # make sure the thread is a daemon here otherwise this
+        # can keep the application running after other threads
+        # have exited
+        self.thread = threading.Thread(name=self.name, target=self.run, daemon=True)
+
+    def setup(self):
+        # type: () -> None
+        self.thread.start()
+
+    def teardown(self):
+        # type: () -> None
+        self.event.set()
+        self.thread.join()
+
+    def run(self):
+        # type: () -> None
+        last = time.perf_counter()
+
+        while True:
+            if self.event.is_set():
+                break
+
+            self.sampler()
+
+            # some time may have elapsed since the last time
+            # we sampled, so we need to account for that and
+            # not sleep for too long
+            elapsed = time.perf_counter() - last
+            if elapsed < self.interval:
+                time.sleep(self.interval - elapsed)
+
+            # after sleeping, make sure to take the current
+            # timestamp so we can use it next iteration
+            last = time.perf_counter()
+
+
+class GeventScheduler(Scheduler):
+    """
+    This scheduler is based on the thread scheduler but adapted to work with
+    gevent. When using gevent, it may monkey patch the threading modules
+    (`threading` and `_thread`). This results in the use of greenlets instead
+    of native threads.
+
+    This is an issue because the sampler CANNOT run in a greenlet because
+    1. Other greenlets doing sync work will prevent the sampler from running
+    2. The greenlet runs in the same thread as other greenlets so when taking
+       a sample, other greenlets will have been evicted from the thread. This
+       results in a sample containing only the sampler's code.
+    """
+
+    mode = "gevent"
+    name = "sentry.profiler.GeventScheduler"
+
+    def __init__(self, frequency):
+        # type: (int) -> None
+
+        # This can throw an ImportError that must be caught if `gevent` is
+        # not installed.
+        from gevent.threadpool import ThreadPool  # type: ignore
+
+        super(GeventScheduler, self).__init__(frequency=frequency)
+
+        # used to signal to the thread that it should stop
+        self.event = threading.Event()
+
+        # Using gevent's ThreadPool allows us to bypass greenlets and spawn
+        # native threads.
+        self.pool = ThreadPool(1)
+
+    def setup(self):
+        # type: () -> None
+        self.pool.spawn(self.run)
+
+    def teardown(self):
+        # type: () -> None
+        self.event.set()
+        self.pool.join()
 
     def run(self):
         # type: () -> None
@@ -668,7 +765,7 @@ def start_profiling(transaction, hub=None):
     # if profiling was not enabled, this should be a noop
     if _should_profile(transaction, hub):
         assert _scheduler is not None
-        with Profile(_scheduler, transaction):
+        with Profile(_scheduler, transaction, hub):
             yield
     else:
         yield

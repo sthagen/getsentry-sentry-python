@@ -709,6 +709,7 @@ class Transaction(Span):
 
         if hub.client is not None and self._profile is not None:
             event["profile"] = self._profile
+            contexts.update({"profile": self._profile.get_profile_context()})
 
         if has_custom_measurements_enabled():
             event["measurements"] = self._measurements
@@ -858,14 +859,6 @@ class NoOpSpan(Span):
     def __repr__(self):
         # type: () -> str
         return self.__class__.__name__
-
-    def __enter__(self):
-        # type: () -> NoOpSpan
-        return self
-
-    def __exit__(self, ty, value, tb):
-        # type: (Optional[Any], Optional[Any], Optional[Any]) -> None
-        pass
 
     def start_child(self, instrumenter=INSTRUMENTER.SENTRY, **kwargs):
         # type: (str, **Any) -> NoOpSpan
