@@ -27,9 +27,9 @@ from sentry_sdk._compat import PY33, PY311
 from sentry_sdk._types import MYPY
 from sentry_sdk.utils import (
     filename_for_module,
-    handle_in_app_impl,
     logger,
     nanosecond_time,
+    set_in_app_in_frames,
 )
 
 if MYPY:
@@ -426,7 +426,11 @@ class Profile(object):
         self._default_active_thread_id = get_current_thread_id() or 0  # type: int
         self.active_thread_id = None  # type: Optional[int]
 
-        self.start_ns = 0  # type: int
+        try:
+            self.start_ns = transaction._start_timestamp_monotonic_ns  # type: int
+        except AttributeError:
+            self.start_ns = 0
+
         self.stop_ns = 0  # type: int
         self.active = False  # type: bool
 
@@ -524,7 +528,8 @@ class Profile(object):
         assert self.scheduler, "No scheduler specified"
         logger.debug("[Profiling] Starting profile")
         self.active = True
-        self.start_ns = nanosecond_time()
+        if not self.start_ns:
+            self.start_ns = nanosecond_time()
         self.scheduler.start_profiling(self)
 
     def stop(self):
@@ -627,14 +632,14 @@ class Profile(object):
         }
 
     def to_json(self, event_opt, options):
-        # type: (Any, Dict[str, Any]) -> Dict[str, Any]
+        # type: (Any, Dict[str, Any], Dict[str, Any]) -> Dict[str, Any]
         profile = self.process()
 
-        handle_in_app_impl(
+        set_in_app_in_frames(
             profile["frames"],
             options["in_app_exclude"],
             options["in_app_include"],
-            default_in_app=False,  # Do not default a frame to `in_app: True`
+            options["project_root"],
         )
 
         return {
@@ -643,7 +648,7 @@ class Profile(object):
             "platform": "python",
             "profile": profile,
             "release": event_opt.get("release", ""),
-            "timestamp": event_opt["timestamp"],
+            "timestamp": event_opt["start_timestamp"],
             "version": "1",
             "device": {
                 "architecture": platform.machine(),
