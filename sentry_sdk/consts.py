@@ -59,6 +59,8 @@ class OP:
     FUNCTION = "function"
     FUNCTION_AWS = "function.aws"
     FUNCTION_GCP = "function.gcp"
+    GRPC_CLIENT = "grpc.client"
+    GRPC_SERVER = "grpc.server"
     HTTP_CLIENT = "http.client"
     HTTP_CLIENT_STREAM = "http.client.stream"
     HTTP_SERVER = "http.server"
@@ -83,6 +85,8 @@ class OP:
     VIEW_RENDER = "view.render"
     VIEW_RESPONSE_RENDER = "view.response.render"
     WEBSOCKET_SERVER = "websocket.server"
+    SOCKET_CONNECTION = "socket.connection"
+    SOCKET_DNS = "socket.dns"
 
 
 # This type exists to trick mypy and PyCharm into thinking `init` and `Client`
@@ -133,6 +137,7 @@ class ClientConstructor(object):
         trace_propagation_targets=[  # noqa: B006
             MATCH_ALL
         ],  # type: Optional[Sequence[str]]
+        functions_to_trace=[],  # type: Sequence[str]  # noqa: B006
         event_scrubber=None,  # type: Optional[sentry_sdk.scrubber.EventScrubber]
     ):
         # type: (...) -> None
@@ -157,4 +162,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "1.17.0"
+VERSION = "1.18.0"
