@@ -189,7 +189,7 @@ class ClientConstructor(object):
         trace_propagation_targets=[  # noqa: B006
             MATCH_ALL
         ],  # type: Optional[Sequence[str]]
-        functions_to_trace=[],  # type: Sequence[str]  # noqa: B006
+        functions_to_trace=[],  # type: Sequence[Dict[str, str]]  # noqa: B006
         event_scrubber=None,  # type: Optional[sentry_sdk.scrubber.EventScrubber]
     ):
         # type: (...) -> None
@@ -214,4 +214,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "1.23.1"
+VERSION = "1.24.0"
