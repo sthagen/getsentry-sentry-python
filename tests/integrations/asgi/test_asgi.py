@@ -5,6 +5,7 @@ from collections import Counter
 import pytest
 import sentry_sdk
 from sentry_sdk import capture_message
+from sentry_sdk.integrations._asgi_common import _get_ip, _get_headers
 from sentry_sdk.integrations.asgi import SentryAsgiMiddleware, _looks_like_asgi3
 
 async_asgi_testclient = pytest.importorskip("async_asgi_testclient")
@@ -19,7 +20,15 @@ minimum_python_36 = pytest.mark.skipif(
 @pytest.fixture
 def asgi3_app():
     async def app(scope, receive, send):
-        if (
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        elif (
             scope["type"] == "http"
             and "route" in scope
             and scope["route"] == "/trigger/error"
@@ -48,25 +57,36 @@ def asgi3_app():
 
 @pytest.fixture
 def asgi3_app_with_error():
-    async def app(scope, receive, send):
-        await send(
-            {
-                "type": "http.response.start",
-                "status": 200,
-                "headers": [
-                    [b"content-type", b"text/plain"],
-                ],
-            }
-        )
-
+    async def send_with_error(event):
         1 / 0
 
-        await send(
-            {
-                "type": "http.response.body",
-                "body": b"Hello, world!",
-            }
-        )
+    async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    ...  # Do some startup here!
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    ...  # Do some shutdown here!
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        else:
+            await send_with_error(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        [b"content-type", b"text/plain"],
+                    ],
+                }
+            )
+            await send_with_error(
+                {
+                    "type": "http.response.body",
+                    "body": b"Hello, world!",
+                }
+            )
 
     return app
 
@@ -139,10 +159,11 @@ async def test_capture_transaction(
         events = capture_events()
         await client.get("/?somevalue=123")
 
-    (transaction_event,) = events
+    (transaction_event, lifespan_transaction_event) = events
 
     assert transaction_event["type"] == "transaction"
     assert transaction_event["transaction"] == "generic ASGI request"
+    assert transaction_event["transaction_info"] == {"source": "route"}
     assert transaction_event["contexts"]["trace"]["op"] == "http.server"
     assert transaction_event["request"] == {
         "headers": {
@@ -167,14 +188,15 @@ async def test_capture_transaction_with_error(
     sentry_init(send_default_pii=True, traces_sample_rate=1.0)
     app = SentryAsgiMiddleware(asgi3_app_with_error)
 
+    events = capture_events()
     with pytest.raises(ZeroDivisionError):
         async with TestClient(app) as client:
-            events = capture_events()
             await client.get("/")
 
-    (error_event, transaction_event) = events
+    (error_event, transaction_event, lifespan_transaction_event) = events
 
     assert error_event["transaction"] == "generic ASGI request"
+    assert error_event["transaction_info"] == {"source": "route"}
     assert error_event["contexts"]["trace"]["op"] == "http.server"
     assert error_event["exception"]["values"][0]["type"] == "ZeroDivisionError"
     assert error_event["exception"]["values"][0]["value"] == "division by zero"
@@ -395,7 +417,7 @@ async def test_auto_session_tracking_with_aggregates(
         (
             "/message",
             "endpoint",
-            "tests.integrations.asgi.test_asgi.asgi3_app_with_error.<locals>.app",
+            "tests.integrations.asgi.test_asgi.asgi3_app.<locals>.app",
             "component",
         ),
     ],
@@ -403,7 +425,7 @@ async def test_auto_session_tracking_with_aggregates(
 @pytest.mark.asyncio
 async def test_transaction_style(
     sentry_init,
-    asgi3_app_with_error,
+    asgi3_app,
     capture_events,
     url,
     transaction_style,
@@ -411,22 +433,19 @@ async def test_transaction_style(
     expected_source,
 ):
     sentry_init(send_default_pii=True, traces_sample_rate=1.0)
-    app = SentryAsgiMiddleware(
-        asgi3_app_with_error, transaction_style=transaction_style
-    )
+    app = SentryAsgiMiddleware(asgi3_app, transaction_style=transaction_style)
 
     scope = {
-        "endpoint": asgi3_app_with_error,
+        "endpoint": asgi3_app,
         "route": url,
         "client": ("127.0.0.1", 60457),
     }
 
-    with pytest.raises(ZeroDivisionError):
-        async with TestClient(app, scope=scope) as client:
-            events = capture_events()
-            await client.get(url)
+    async with TestClient(app, scope=scope) as client:
+        events = capture_events()
+        await client.get(url)
 
-    (_, transaction_event) = events
+    (transaction_event, lifespan_transaction_event) = events
 
     assert transaction_event["transaction"] == expected_transaction
     assert transaction_event["transaction_info"] == {"source": expected_source}
@@ -475,8 +494,7 @@ def test_get_ip_x_forwarded_for():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "8.8.8.8"
 
     # x-forwarded-for overrides x-real-ip
@@ -488,8 +506,7 @@ def test_get_ip_x_forwarded_for():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "8.8.8.8"
 
     # when multiple x-forwarded-for headers are, the first is taken
@@ -502,8 +519,7 @@ def test_get_ip_x_forwarded_for():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "5.5.5.5"
 
 
@@ -516,8 +532,7 @@ def test_get_ip_x_real_ip():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "10.10.10.10"
 
     # x-forwarded-for overrides x-real-ip
@@ -529,8 +544,7 @@ def test_get_ip_x_real_ip():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "8.8.8.8"
 
 
@@ -542,8 +556,7 @@ def test_get_ip():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "127.0.0.1"
 
     # x-forwarded-for header overides the ip from client
@@ -554,8 +567,7 @@ def test_get_ip():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "8.8.8.8"
 
     # x-real-for header overides the ip from client
@@ -566,8 +578,7 @@ def test_get_ip():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    ip = middleware._get_ip(scope)
+    ip = _get_ip(scope)
     assert ip == "10.10.10.10"
 
 
@@ -582,8 +593,7 @@ def test_get_headers():
         "client": ("127.0.0.1", 60457),
         "headers": headers,
     }
-    middleware = SentryAsgiMiddleware({})
-    headers = middleware._get_headers(scope)
+    headers = _get_headers(scope)
     assert headers == {
         "x-real-ip": "10.10.10.10",
         "some_header": "123, abc",
