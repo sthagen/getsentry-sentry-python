@@ -1,5 +1,6 @@
 import sys
 import weakref
+from functools import wraps
 
 import sentry_sdk
 from sentry_sdk.api import continue_trace
@@ -47,6 +48,8 @@ if TYPE_CHECKING:
     from aiohttp.web_request import Request
     from aiohttp.web_urldispatcher import UrlMappingMatchInfo
     from aiohttp import TraceRequestStartParams, TraceRequestEndParams
+
+    from collections.abc import Set
     from types import SimpleNamespace
     from typing import Any
     from typing import Optional
@@ -58,20 +61,27 @@ if TYPE_CHECKING:
 
 
 TRANSACTION_STYLE_VALUES = ("handler_name", "method_and_path_pattern")
+DEFAULT_FAILED_REQUEST_STATUS_CODES = frozenset(range(500, 600))
 
 
 class AioHttpIntegration(Integration):
     identifier = "aiohttp"
     origin = f"auto.http.{identifier}"
 
-    def __init__(self, transaction_style="handler_name"):
-        # type: (str) -> None
+    def __init__(
+        self,
+        transaction_style="handler_name",  # type: str
+        *,
+        failed_request_status_codes=DEFAULT_FAILED_REQUEST_STATUS_CODES,  # type: Set[int]
+    ):
+        # type: (...) -> None
         if transaction_style not in TRANSACTION_STYLE_VALUES:
             raise ValueError(
                 "Invalid value for transaction_style: %s (must be in %s)"
                 % (transaction_style, TRANSACTION_STYLE_VALUES)
             )
         self.transaction_style = transaction_style
+        self._failed_request_status_codes = failed_request_status_codes
 
     @staticmethod
     def setup_once():
@@ -99,7 +109,8 @@ class AioHttpIntegration(Integration):
 
         async def sentry_app_handle(self, request, *args, **kwargs):
             # type: (Any, Request, *Any, **Any) -> Any
-            if sentry_sdk.get_client().get_integration(AioHttpIntegration) is None:
+            integration = sentry_sdk.get_client().get_integration(AioHttpIntegration)
+            if integration is None:
                 return await old_handle(self, request, *args, **kwargs)
 
             weak_request = weakref.ref(request)
@@ -130,6 +141,13 @@ class AioHttpIntegration(Integration):
                             response = await old_handle(self, request)
                         except HTTPException as e:
                             transaction.set_http_status(e.status_code)
+
+                            if (
+                                e.status_code
+                                in integration._failed_request_status_codes
+                            ):
+                                _capture_exception()
+
                             raise
                         except (asyncio.CancelledError, ConnectionResetError):
                             transaction.set_status(SPANSTATUS.CANCELLED)
@@ -139,18 +157,31 @@ class AioHttpIntegration(Integration):
                             # have no way to tell. Do not set span status.
                             reraise(*_capture_exception())
 
-                        transaction.set_http_status(response.status)
+                        try:
+                            # A valid response handler will return a valid response with a status. But, if the handler
+                            # returns an invalid response (e.g. None), the line below will raise an AttributeError.
+                            # Even though this is likely invalid, we need to handle this case to ensure we don't break
+                            # the application.
+                            response_status = response.status
+                        except AttributeError:
+                            pass
+                        else:
+                            transaction.set_http_status(response_status)
+
                         return response
 
         Application._handle = sentry_app_handle
 
         old_urldispatcher_resolve = UrlDispatcher.resolve
 
+        @wraps(old_urldispatcher_resolve)
         async def sentry_urldispatcher_resolve(self, request):
             # type: (UrlDispatcher, Request) -> UrlMappingMatchInfo
             rv = await old_urldispatcher_resolve(self, request)
 
             integration = sentry_sdk.get_client().get_integration(AioHttpIntegration)
+            if integration is None:
+                return rv
 
             name = None
 
