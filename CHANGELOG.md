@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.34.1
+
+### Various fixes & improvements
+
+- Fix: Make sure Span data in AI instrumentations is always a primitive data type (#4643) by @antonpirker
+- Fix: Typo in CHANGELOG.md (#4640) by @jgillard
+
 ## 2.34.0
 
 ### Various fixes & improvements
@@ -12,7 +19,7 @@
   default 1024 characters/bytes).
 
   If you want to adjust the limit, you can set a
-  [`max_value_limit`](https://docs.sentry.io/platforms/python/configuration/options/#max_value_length)
+  [`max_value_length`](https://docs.sentry.io/platforms/python/configuration/options/#max_value_length)
   in your `sentry_sdk.init()`.
 
 - `OpenAI` integration update (#4612) by @antonpirker
