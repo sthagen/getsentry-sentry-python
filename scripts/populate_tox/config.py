@@ -47,6 +47,12 @@ TEST_SUITE_CONFIG = {
         "package": "apache-beam",
         "python": ">=3.7",
     },
+    "boto3": {
+        "package": "boto3",
+        "deps": {
+            "py3.7,py3.8": ["urllib3<2.0.0"],
+        },
+    },
     "bottle": {
         "package": "bottle",
         "deps": {
@@ -56,8 +62,14 @@ TEST_SUITE_CONFIG = {
     "celery": {
         "package": "celery",
         "deps": {
-            "*": ["newrelic", "redis"],
+            "*": ["newrelic<10.17.0", "redis"],
             "py3.7": ["importlib-metadata<5.0"],
+        },
+    },
+    "chalice": {
+        "package": "chalice",
+        "deps": {
+            "*": ["pytest-chalice"],
         },
     },
     "clickhouse_driver": {
