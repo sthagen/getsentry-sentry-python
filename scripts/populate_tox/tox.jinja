@@ -7,10 +7,8 @@
 # by "scripts/populate_tox/populate_tox.py". Any changes to the file should
 # be made in the template (if you want to change a hardcoded part of the file)
 # or in the script (if you want to change the auto-generated part).
-# The file (and all resulting CI YAMLs) then need to be regenerated via
+# The file (and all resulting CI YAMLs) then needs to be regenerated via
 # "scripts/generate-test-files.sh".
-#
-# Last generated: {{ updated }}
 
 [tox]
 requires =
@@ -24,17 +22,6 @@ envlist =
     {py3.6,py3.8,py3.10,py3.11,py3.12}-gevent
 
     # === Integrations ===
-    # General format is {pythonversion}-{integrationname}-v{frameworkversion}
-    # 1 blank line between different integrations
-    # Each framework version should only be mentioned once. I.e:
-    #   {py3.7,py3.10}-django-v{3.2}
-    #   {py3.10}-django-v{4.0}
-    # instead of:
-    #   {py3.7}-django-v{3.2}
-    #   {py3.7,py3.10}-django-v{3.2,4.0}
-    #
-    # At a minimum, we should test against at least the lowest
-    # and the latest supported version of a framework.
 
     # Asgi
     {py3.7,py3.12,py3.13}-asgi
@@ -55,8 +42,7 @@ envlist =
     {py3.8,py3.9,py3.10,py3.11,py3.12,py3.13}-potel
 
     # === Integrations - Auto-generated ===
-    # These come from the populate_tox.py script. Eventually we should move all
-    # integration tests there.
+    # These come from the populate_tox.py script.
 
     {% for group, integrations in groups.items() %}
     # ~~~ {{ group }} ~~~
@@ -121,8 +107,7 @@ deps =
     potel: -e .[opentelemetry-experimental]
 
     # === Integrations - Auto-generated ===
-    # These come from the populate_tox.py script. Eventually we should move all
-    # integration tests there.
+    # These come from the populate_tox.py script.
 
     {% for group, integrations in groups.items() %}
     # ~~~ {{ group }} ~~~
