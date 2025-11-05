@@ -2047,9 +2047,19 @@ def get_before_send_log(options):
     )
 
 
+def has_metrics_enabled(options):
+    # type: (Optional[dict[str, Any]]) -> bool
+    if options is None:
+        return False
+
+    return bool(options.get("enable_metrics", True))
+
+
 def get_before_send_metric(options):
     # type: (Optional[dict[str, Any]]) -> Optional[Callable[[Metric, Hint], Optional[Metric]]]
     if options is None:
         return None
 
-    return options["_experiments"].get("before_send_metric")
+    return options.get("before_send_metric") or options["_experiments"].get(
+        "before_send_metric"
+    )
