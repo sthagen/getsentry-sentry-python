@@ -1,8 +1,9 @@
 import inspect
 import json
 from collections import deque
-from typing import TYPE_CHECKING
+from copy import deepcopy
 from sys import getsizeof
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -13,6 +14,8 @@ import sentry_sdk
 from sentry_sdk.utils import logger
 
 MAX_GEN_AI_MESSAGE_BYTES = 20_000  # 20KB
+# Maximum characters when only a single message is left after bytes truncation
+MAX_SINGLE_MESSAGE_CONTENT_CHARS = 10_000
 
 
 class GEN_AI_ALLOWED_MESSAGE_ROLES:
@@ -35,8 +38,7 @@ for target_role, source_roles in GEN_AI_MESSAGE_ROLE_REVERSE_MAPPING.items():
         GEN_AI_MESSAGE_ROLE_MAPPING[source_role] = target_role
 
 
-def _normalize_data(data, unpack=True):
-    # type: (Any, bool) -> Any
+def _normalize_data(data: "Any", unpack: bool = True) -> "Any":
     # convert pydantic data (e.g. OpenAI v1+) to json compatible format
     if hasattr(data, "model_dump"):
         # Check if it's a class (type) rather than an instance
@@ -61,8 +63,9 @@ def _normalize_data(data, unpack=True):
     return data if isinstance(data, (int, float, bool, str)) else str(data)
 
 
-def set_data_normalized(span, key, value, unpack=True):
-    # type: (Span, str, Any, bool) -> None
+def set_data_normalized(
+    span: "Span", key: str, value: "Any", unpack: bool = True
+) -> None:
     normalized = _normalize_data(value, unpack=unpack)
     if isinstance(normalized, (int, float, bool, str)):
         span.set_data(key, normalized)
@@ -70,8 +73,7 @@ def set_data_normalized(span, key, value, unpack=True):
         span.set_data(key, json.dumps(normalized))
 
 
-def normalize_message_role(role):
-    # type: (str) -> str
+def normalize_message_role(role: str) -> str:
     """
     Normalize a message role to one of the 4 allowed gen_ai role values.
     Maps "ai" -> "assistant" and keeps other standard roles unchanged.
@@ -79,8 +81,7 @@ def normalize_message_role(role):
     return GEN_AI_MESSAGE_ROLE_MAPPING.get(role, role)
 
 
-def normalize_message_roles(messages):
-    # type: (list[dict[str, Any]]) -> list[dict[str, Any]]
+def normalize_message_roles(messages: "list[dict[str, Any]]") -> "list[dict[str, Any]]":
     """
     Normalize roles in a list of messages to use standard gen_ai role values.
     Creates a deep copy to avoid modifying the original messages.
@@ -98,8 +99,7 @@ def normalize_message_roles(messages):
     return normalized_messages
 
 
-def get_start_span_function():
-    # type: () -> Callable[..., Any]
+def get_start_span_function() -> "Callable[..., Any]":
     current_span = sentry_sdk.get_current_span()
     transaction_exists = (
         current_span is not None and current_span.containing_transaction is not None
@@ -107,8 +107,25 @@ def get_start_span_function():
     return sentry_sdk.start_span if transaction_exists else sentry_sdk.start_transaction
 
 
-def _find_truncation_index(messages, max_bytes):
-    # type: (List[Dict[str, Any]], int) -> int
+def _truncate_single_message_content_if_present(
+    message: "Dict[str, Any]", max_chars: int
+) -> "Dict[str, Any]":
+    """
+    Truncate a message's content to at most `max_chars` characters and append an
+    ellipsis if truncation occurs.
+    """
+    if not isinstance(message, dict) or "content" not in message:
+        return message
+    content = message["content"]
+
+    if not isinstance(content, str) or len(content) <= max_chars:
+        return message
+
+    message["content"] = content[:max_chars] + "..."
+    return message
+
+
+def _find_truncation_index(messages: "List[Dict[str, Any]]", max_bytes: int) -> int:
     """
     Find the index of the first message that would exceed the max bytes limit.
     Compute the individual message sizes, and return the index of the first message from the back
@@ -124,8 +141,21 @@ def _find_truncation_index(messages, max_bytes):
     return 0
 
 
-def truncate_messages_by_size(messages, max_bytes=MAX_GEN_AI_MESSAGE_BYTES):
-    # type: (List[Dict[str, Any]], int) -> Tuple[List[Dict[str, Any]], int]
+def truncate_messages_by_size(
+    messages: "List[Dict[str, Any]]",
+    max_bytes: int = MAX_GEN_AI_MESSAGE_BYTES,
+    max_single_message_chars: int = MAX_SINGLE_MESSAGE_CONTENT_CHARS,
+) -> "Tuple[List[Dict[str, Any]], int]":
+    """
+    Returns a truncated messages list, consisting of
+    - the last message, with its content truncated to `max_single_message_chars` characters,
+      if the last message's size exceeds `max_bytes` bytes; otherwise,
+    - the maximum number of messages, starting from the end of the `messages` list, whose total
+      serialized size does not exceed `max_bytes` bytes.
+
+    In the single message case, the serialized message size may exceed `max_bytes`, because
+    truncation is based only on character count in that case.
+    """
     serialized_json = json.dumps(messages, separators=(",", ":"))
     current_size = len(serialized_json.encode("utf-8"))
 
@@ -133,13 +163,26 @@ def truncate_messages_by_size(messages, max_bytes=MAX_GEN_AI_MESSAGE_BYTES):
         return messages, 0
 
     truncation_index = _find_truncation_index(messages, max_bytes)
-    return messages[truncation_index:], truncation_index
+    if truncation_index < len(messages):
+        truncated_messages = messages[truncation_index:]
+    else:
+        truncation_index = len(messages) - 1
+        truncated_messages = messages[-1:]
+
+    if len(truncated_messages) == 1:
+        truncated_messages[0] = _truncate_single_message_content_if_present(
+            deepcopy(truncated_messages[0]), max_chars=max_single_message_chars
+        )
+
+    return truncated_messages, truncation_index
 
 
 def truncate_and_annotate_messages(
-    messages, span, scope, max_bytes=MAX_GEN_AI_MESSAGE_BYTES
-):
-    # type: (Optional[List[Dict[str, Any]]], Any, Any, int) -> Optional[List[Dict[str, Any]]]
+    messages: "Optional[List[Dict[str, Any]]]",
+    span: "Any",
+    scope: "Any",
+    max_bytes: int = MAX_GEN_AI_MESSAGE_BYTES,
+) -> "Optional[List[Dict[str, Any]]]":
     if not messages:
         return None
 
