@@ -869,6 +869,14 @@ class SPANDATA:
     Example: "a1b2c3d4e5f6"
     """
 
+    META_GEN_AI_ORIGINAL_INPUT_MESSAGES_LENGTH = (
+        "sentry.sdk_meta.gen_ai.input.messages.original_length"
+    )
+    """
+    The original number of input non-system instruction messages, before SDK trimming.
+    Example: 4
+    """
+
 
 class SPANSTATUS:
     """
@@ -1483,4 +1491,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "2.50.0"
+VERSION = "2.51.0"
