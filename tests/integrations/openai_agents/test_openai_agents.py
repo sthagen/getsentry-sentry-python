@@ -35,7 +35,13 @@ from agents.tool import HostedMCPTool
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
 from agents.version import __version__ as OPENAI_AGENTS_VERSION
 
-from openai.types.responses import Response, ResponseUsage
+from openai.types.responses import (
+    ResponseCreatedEvent,
+    ResponseTextDeltaEvent,
+    ResponseCompletedEvent,
+    Response,
+    ResponseUsage,
+)
 from openai.types.responses.response_usage import (
     InputTokensDetails,
     OutputTokensDetails,
@@ -78,6 +84,63 @@ EXAMPLE_RESPONSE = Response(
         total_tokens=30,
     ),
 )
+
+
+async def EXAMPLE_STREAMED_RESPONSE(*args, **kwargs):
+    yield ResponseCreatedEvent(
+        response=Response(
+            id="chat-id",
+            output=[],
+            parallel_tool_calls=False,
+            tool_choice="none",
+            tools=[],
+            created_at=10000000,
+            model="response-model-id",
+            object="response",
+        ),
+        type="response.created",
+        sequence_number=0,
+    )
+
+    yield ResponseCompletedEvent(
+        response=Response(
+            id="chat-id",
+            output=[
+                ResponseOutputMessage(
+                    id="message-id",
+                    content=[
+                        ResponseOutputText(
+                            annotations=[],
+                            text="the model response",
+                            type="output_text",
+                        ),
+                    ],
+                    role="assistant",
+                    status="completed",
+                    type="message",
+                ),
+            ],
+            parallel_tool_calls=False,
+            tool_choice="none",
+            tools=[],
+            created_at=10000000,
+            model="response-model-id",
+            object="response",
+            usage=ResponseUsage(
+                input_tokens=20,
+                input_tokens_details=InputTokensDetails(
+                    cached_tokens=5,
+                ),
+                output_tokens=10,
+                output_tokens_details=OutputTokensDetails(
+                    reasoning_tokens=8,
+                ),
+                total_tokens=30,
+            ),
+        ),
+        type="response.completed",
+        sequence_number=1,
+    )
 
 
 @pytest.fixture
@@ -1170,6 +1233,90 @@ async def test_tool_execution_span(sentry_init, capture_events, test_agent):
     assert ai_client_span2["data"]["gen_ai.usage.output_tokens.reasoning"] == 0
     assert ai_client_span2["data"]["gen_ai.usage.output_tokens"] == 10
     assert ai_client_span2["data"]["gen_ai.usage.total_tokens"] == 25
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_tool_propagation_header_streamed(sentry_init, test_agent):
+    """
+    Test responses API is given trace propagation headers with HostedMCPTool.
+    """
+
+    hosted_tool = HostedMCPTool(
+        tool_config={
+            "type": "mcp",
+            "server_label": "test_server",
+            "server_url": "http://example.com/",
+            "headers": {
+                "baggage": "custom=data",
+            },
+        },
+    )
+
+    client = AsyncOpenAI(api_key="z")
+    client.responses._post = AsyncMock(return_value=EXAMPLE_RESPONSE)
+
+    model = OpenAIResponsesModel(model="gpt-4", openai_client=client)
+
+    agent_with_tool = test_agent.clone(
+        tools=[hosted_tool],
+        model=model,
+    )
+
+    sentry_init(
+        integrations=[OpenAIAgentsIntegration()],
+        traces_sample_rate=1.0,
+        release="d08ebdb9309e1b004c6f52202de58a09c2268e42",
+    )
+
+    with patch.object(
+        model._client.responses,
+        "create",
+        side_effect=EXAMPLE_STREAMED_RESPONSE,
+    ) as create, mock.patch(
+        "sentry_sdk.tracing_utils.Random.randrange", return_value=500000
+    ):
+        with sentry_sdk.start_transaction(
+            name="/interactions/other-dogs/new-dog",
+            op="greeting.sniff",
+            trace_id="01234567890123456789012345678901",
+        ) as transaction:
+            result = agents.Runner.run_streamed(
+                agent_with_tool,
+                "Please use the simple test tool",
+                run_config=test_run_config,
+            )
+
+            async for event in result.stream_events():
+                pass
+
+            ai_client_span = transaction._span_recorder.spans[-1]
+
+        args, kwargs = create.call_args
+
+        assert "tools" in kwargs
+        assert len(kwargs["tools"]) == 1
+        hosted_mcp_tool = kwargs["tools"][0]
+
+        assert hosted_mcp_tool["headers"][
+            "sentry-trace"
+        ] == "{trace_id}-{parent_span_id}-{sampled}".format(
+            trace_id=transaction.trace_id,
+            parent_span_id=ai_client_span.span_id,
+            sampled=1,
+        )
+
+        expected_outgoing_baggage = (
+            "custom=data,"
+            "sentry-trace_id=01234567890123456789012345678901,"
+            "sentry-sample_rand=0.500000,"
+            "sentry-environment=production,"
+            "sentry-release=d08ebdb9309e1b004c6f52202de58a09c2268e42,"
+            "sentry-transaction=/interactions/other-dogs/new-dog,"
+            "sentry-sample_rate=1.0,"
+            "sentry-sampled=true"
+        )
+
+        assert hosted_mcp_tool["headers"]["baggage"] == expected_outgoing_baggage
 
 
 @pytest.mark.asyncio
@@ -2710,3 +2857,194 @@ async def test_streaming_ttft_on_chat_span(sentry_init, test_agent):
 
         # Verify streaming flag is set
         assert chat_span._data.get(SPANDATA.GEN_AI_RESPONSE_STREAMING) is True
+
+
+@pytest.mark.skipif(
+    parse_version(OPENAI_AGENTS_VERSION) < (0, 4, 0),
+    reason="conversation_id support requires openai-agents >= 0.4.0",
+)
+@pytest.mark.asyncio
+async def test_conversation_id_on_all_spans(
+    sentry_init, capture_events, test_agent, mock_model_response
+):
+    """
+    Test that gen_ai.conversation.id is set on all AI-related spans when passed to Runner.run().
+    """
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        with patch(
+            "agents.models.openai_responses.OpenAIResponsesModel.get_response"
+        ) as mock_get_response:
+            mock_get_response.return_value = mock_model_response
+
+            sentry_init(
+                integrations=[OpenAIAgentsIntegration()],
+                traces_sample_rate=1.0,
+            )
+
+            events = capture_events()
+
+            result = await agents.Runner.run(
+                test_agent,
+                "Test input",
+                run_config=test_run_config,
+                conversation_id="conv_test_123",
+            )
+
+            assert result is not None
+
+    (transaction,) = events
+    spans = transaction["spans"]
+    invoke_agent_span, ai_client_span = spans
+
+    # Verify workflow span (transaction) has conversation_id
+    assert (
+        transaction["contexts"]["trace"]["data"]["gen_ai.conversation.id"]
+        == "conv_test_123"
+    )
+
+    # Verify invoke_agent span has conversation_id
+    assert invoke_agent_span["data"]["gen_ai.conversation.id"] == "conv_test_123"
+
+    # Verify ai_client span has conversation_id
+    assert ai_client_span["data"]["gen_ai.conversation.id"] == "conv_test_123"
+
+
+@pytest.mark.skipif(
+    parse_version(OPENAI_AGENTS_VERSION) < (0, 4, 0),
+    reason="conversation_id support requires openai-agents >= 0.4.0",
+)
+@pytest.mark.asyncio
+async def test_conversation_id_on_tool_span(sentry_init, capture_events, test_agent):
+    """
+    Test that gen_ai.conversation.id is set on tool execution spans when passed to Runner.run().
+    """
+
+    @agents.function_tool
+    def simple_tool(message: str) -> str:
+        """A simple tool"""
+        return f"Result: {message}"
+
+    agent_with_tool = test_agent.clone(tools=[simple_tool])
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        with patch(
+            "agents.models.openai_responses.OpenAIResponsesModel.get_response"
+        ) as mock_get_response:
+            tool_call = ResponseFunctionToolCall(
+                id="call_123",
+                call_id="call_123",
+                name="simple_tool",
+                type="function_call",
+                arguments='{"message": "hello"}',
+            )
+
+            tool_response = ModelResponse(
+                output=[tool_call],
+                usage=Usage(
+                    requests=1, input_tokens=10, output_tokens=5, total_tokens=15
+                ),
+                response_id="resp_tool_456",
+            )
+
+            final_response = ModelResponse(
+                output=[
+                    ResponseOutputMessage(
+                        id="msg_final",
+                        type="message",
+                        status="completed",
+                        content=[
+                            ResponseOutputText(
+                                text="Done",
+                                type="output_text",
+                                annotations=[],
+                            )
+                        ],
+                        role="assistant",
+                    )
+                ],
+                usage=Usage(
+                    requests=1, input_tokens=15, output_tokens=10, total_tokens=25
+                ),
+                response_id="resp_final_789",
+            )
+
+            mock_get_response.side_effect = [tool_response, final_response]
+
+            sentry_init(
+                integrations=[OpenAIAgentsIntegration()],
+                traces_sample_rate=1.0,
+            )
+
+            events = capture_events()
+
+            await agents.Runner.run(
+                agent_with_tool,
+                "Use the tool",
+                run_config=test_run_config,
+                conversation_id="conv_tool_test_456",
+            )
+
+    (transaction,) = events
+    spans = transaction["spans"]
+
+    # Find the tool span
+    tool_span = None
+    for span in spans:
+        if span.get("description", "").startswith("execute_tool"):
+            tool_span = span
+            break
+
+    assert tool_span is not None
+    # Tool span should have the conversation_id passed to Runner.run()
+    assert tool_span["data"]["gen_ai.conversation.id"] == "conv_tool_test_456"
+
+    # Workflow span (transaction) should have the same conversation_id
+    assert (
+        transaction["contexts"]["trace"]["data"]["gen_ai.conversation.id"]
+        == "conv_tool_test_456"
+    )
+
+
+@pytest.mark.skipif(
+    parse_version(OPENAI_AGENTS_VERSION) < (0, 4, 0),
+    reason="conversation_id support requires openai-agents >= 0.4.0",
+)
+@pytest.mark.asyncio
+async def test_no_conversation_id_when_not_provided(
+    sentry_init, capture_events, test_agent, mock_model_response
+):
+    """
+    Test that gen_ai.conversation.id is not set when not passed to Runner.run().
+    """
+
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        with patch(
+            "agents.models.openai_responses.OpenAIResponsesModel.get_response"
+        ) as mock_get_response:
+            mock_get_response.return_value = mock_model_response
+
+            sentry_init(
+                integrations=[OpenAIAgentsIntegration()],
+                traces_sample_rate=1.0,
+            )
+
+            events = capture_events()
+
+            # Don't pass conversation_id
+            result = await agents.Runner.run(
+                test_agent, "Test input", run_config=test_run_config
+            )
+
+            assert result is not None
+
+    (transaction,) = events
+    spans = transaction["spans"]
+    invoke_agent_span, ai_client_span = spans
+
+    # Verify conversation_id is NOT set on any spans
+    assert "gen_ai.conversation.id" not in transaction["contexts"]["trace"].get(
+        "data", {}
+    )
+    assert "gen_ai.conversation.id" not in invoke_agent_span.get("data", {})
+    assert "gen_ai.conversation.id" not in ai_client_span.get("data", {})
