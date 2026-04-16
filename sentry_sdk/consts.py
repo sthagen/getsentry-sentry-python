@@ -441,6 +441,12 @@ class SPANDATA:
     Example: myDatabase
     """
 
+    DB_DRIVER_NAME = "db.driver.name"
+    """
+    The name of the database driver being used for the connection.
+    Example: "psycopg2"
+    """
+
     DB_OPERATION = "db.operation"
     """
     The name of the operation being executed, e.g. the MongoDB command name such as findAndModify, or the SQL keyword.
@@ -1486,4 +1492,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "2.57.0"
+VERSION = "2.58.0"
