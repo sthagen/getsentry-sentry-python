@@ -825,6 +825,12 @@ class SPANDATA:
     Example: GET
     """
 
+    HTTP_REQUEST_BODY_DATA = "http.request.body.data"
+    """
+    HTTP request body data. Can be given as string or structural data of any format.
+    Example: "[{\"role\": \"user\", \"message\": \"hello\"}]"
+    """
+
     HTTP_REQUEST_HEADER = "http.request.header"
     """
     Prefix for HTTP request header attributes. The header name (lowercased) is
@@ -836,12 +842,6 @@ class SPANDATA:
     """
     The HTTP method used.
     Example: GET
-    """
-
-    HTTP_REQUEST_BODY_DATA = "http.request.body.data"
-    """
-    The HTTP request body data as string.
-    Example: "[{\"role\": \"user\", \"message\": \"hello\"}]"
     """
 
     HTTP_QUERY = "http.query"
@@ -1747,4 +1747,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "2.61.1"
+VERSION = "2.62.0"
