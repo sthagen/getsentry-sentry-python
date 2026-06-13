@@ -302,7 +302,7 @@ def test_tracing_enabled(
             queue.enqueue(crashing_job, foo=None)
             worker.work(burst=True)
 
-        (error_event,) = (item.payload for item in items)
+        (error_event,) = (item.payload for item in items if item.type == "event")
 
         assert error_event["contexts"]["trace"]["trace_id"] == span.trace_id
 
@@ -535,7 +535,7 @@ def test_span_origin(
         worker.work(burst=True)
 
         sentry_sdk.flush()
-        spans = [item.payload for item in items if item.type == "span"]
+        spans = [item.payload for item in items]
         (span,) = (
             span
             for span in spans
