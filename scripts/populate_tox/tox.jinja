@@ -80,10 +80,12 @@ deps =
     # === Common ===
     py3.8-common: hypothesis
     common: brotli
+    common: executing
     common: httpcore[asyncio,http2]
     common: jsonschema
     common: pysocks
     common: pytest-asyncio
+    common: pytest-forked
     common: pytest-timeout
     common: pytest_localserver
     common: socksio
@@ -92,6 +94,8 @@ deps =
     # and https://github.com/pytest-dev/pytest-forked/issues/67
     # for justification of the upper bound on pytest
     {py3.6,py3.7}-common: pytest<7.0.0
+    # Handled by importlib.metadata on Python 3.8+
+    {py3.6,py3.7}-common: setuptools<82
     {py3.8,py3.9,py3.10,py3.11,py3.12,py3.13,py3.14,py3.14t}-common: pytest
     # coverage 7.11.1-7.11.3 makes some of our tests flake
     {py3.14,py3.14t}-common: coverage==7.11.0
@@ -105,10 +109,12 @@ deps =
     {py3.6,py3.7}-gevent: pytest<7.0.0
     {py3.8,py3.9,py3.10,py3.11,py3.12}-gevent: pytest
     gevent: brotli
+    gevent: executing
     gevent: httpcore[http2]
     gevent: jsonschema
     gevent: pysocks
     gevent: pytest-asyncio
+    gevent: pytest-forked
     gevent: pytest-timeout
     gevent: pytest_localserver
     gevent: setuptools<82
@@ -131,18 +137,23 @@ deps =
     # AWS Lambda
     aws_lambda: aws-cdk-lib
     aws_lambda: boto3
+    aws_lambda: docker
     aws_lambda: fastapi
     aws_lambda: requests
     aws_lambda: uvicorn
+    aws_lambda: pyyaml
 
     # OpenTelemetry (OTel)
     opentelemetry: opentelemetry-distro
+    opentelemetry: pytest-forked
 
     # OpenTelemetry with OTLP
     otlp: opentelemetry-distro[otlp]
+    otlp: responses
 
     # OpenTelemetry Experimental (POTel)
     potel: opentelemetry-distro
+    potel: pytest-forked
 
     # === Integrations - Auto-generated ===
     # These come from the populate_tox.py script.
