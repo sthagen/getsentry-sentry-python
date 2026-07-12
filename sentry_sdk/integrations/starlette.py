@@ -40,31 +40,39 @@ from sentry_sdk.utils import (
 )
 
 if TYPE_CHECKING:
-    from typing import Any, Awaitable, Callable, Container, Dict, Optional, Tuple, Union
+    from typing import (
+        Any,
+        Awaitable,
+        Callable,
+        Container,
+        Dict,
+        Optional,
+        Tuple,
+        Union,
+    )
 
     from sentry_sdk._types import Event, HttpStatusCodeRange
-
 try:
-    import starlette  # type: ignore
+    import starlette
     from starlette import __version__ as STARLETTE_VERSION
-    from starlette.applications import Starlette  # type: ignore
-    from starlette.datastructures import (  # type: ignore
+    from starlette.applications import Starlette
+    from starlette.datastructures import (
         UploadFile,
     )
-    from starlette.middleware import Middleware  # type: ignore
-    from starlette.middleware.authentication import (  # type: ignore
+    from starlette.middleware import Middleware
+    from starlette.middleware.authentication import (
         AuthenticationMiddleware,
     )
-    from starlette.requests import Request  # type: ignore
-    from starlette.routing import Match  # type: ignore
-    from starlette.types import ASGIApp, Receive, Send  # type: ignore
+    from starlette.requests import Request
+    from starlette.routing import Match
+    from starlette.types import ASGIApp, Receive, Send
     from starlette.types import Scope as StarletteScope
 except ImportError:
     raise DidNotEnable("Starlette is not installed")
 
 try:
     # Starlette 0.20
-    from starlette.middleware.exceptions import ExceptionMiddleware  # type: ignore
+    from starlette.middleware.exceptions import ExceptionMiddleware
 except ImportError:
     # Startlette 0.19.1
     from starlette.exceptions import ExceptionMiddleware  # type: ignore
@@ -73,12 +81,12 @@ try:
     # Optional dependency of Starlette to parse form data.
     try:
         # python-multipart 0.0.13 and later
-        import python_multipart as multipart  # type: ignore
+        import python_multipart as multipart
     except ImportError:
         # python-multipart 0.0.12 and earlier
         import multipart  # type: ignore
 except ImportError:
-    multipart = None
+    multipart = None  # type: ignore[assignment]
 
 
 # Vendored: https://github.com/Kludex/starlette/blob/0a29b5ccdcbd1285c75c4fdb5d62ae1d244a21b0/starlette/_utils.py#L11-L17
@@ -156,8 +164,10 @@ class StarletteIntegration(Integration):
             patch_templates()
 
 
-def _enable_span_for_middleware(middleware_class: "Any") -> type:
-    old_call = middleware_class.__call__
+def _enable_span_for_middleware(
+    middleware_class: "Any",
+) -> "Any":
+    old_call: "Callable[..., Awaitable[Any]]" = middleware_class.__call__
 
     async def _create_span_call(
         app: "Any",
@@ -398,8 +408,8 @@ def patch_authentication_middleware(middleware_class: "Any") -> None:
             receive: "Callable[[], Awaitable[Dict[str, Any]]]",
             send: "Callable[[Dict[str, Any]], Awaitable[None]]",
         ) -> None:
-            await old_call(self, scope, receive, send)
             _add_user_to_sentry_scope(scope)
+            await old_call(self, scope, receive, send)
 
         middleware_class.__call__ = _sentry_authenticationmiddleware_call
 
@@ -412,7 +422,6 @@ def patch_middlewares() -> None:
     old_middleware_init = Middleware.__init__
 
     not_yet_patched = "_sentry_middleware_init" not in str(old_middleware_init)
-
     if not_yet_patched:
 
         def _sentry_middleware_init(
@@ -430,7 +439,7 @@ def patch_middlewares() -> None:
             if cls == ExceptionMiddleware:
                 patch_exception_middleware(cls)
 
-        Middleware.__init__ = _sentry_middleware_init
+        Middleware.__init__ = _sentry_middleware_init  # type: ignore[method-assign]
 
 
 def patch_asgi_app(root_path_in_path: "_RootPathInPath") -> None:
@@ -462,7 +471,7 @@ def patch_asgi_app(root_path_in_path: "_RootPathInPath") -> None:
 
         return await middleware(scope, receive, send)
 
-    Starlette.__call__ = _sentry_patched_asgi_app
+    Starlette.__call__ = _sentry_patched_asgi_app  # type: ignore[method-assign]
 
 
 # This was vendored in from Starlette to support Starlette 0.19.1 because
@@ -662,7 +671,7 @@ def patch_templates() -> None:
 
     # https://github.com/Kludex/starlette/commit/96479daca2e4bd8157f68d914fd162aa94eff73a
     try:
-        from starlette.templating import Jinja2Templates  # type: ignore
+        from starlette.templating import Jinja2Templates
     except ImportError:
         return
 
@@ -692,7 +701,7 @@ def patch_templates() -> None:
 
             return old_jinja2templates_init(self, *args, **kwargs)
 
-        Jinja2Templates.__init__ = _sentry_jinja2templates_init
+        Jinja2Templates.__init__ = _sentry_jinja2templates_init  # type: ignore[method-assign]
 
 
 class StarletteRequestExtractor:
@@ -700,8 +709,6 @@ class StarletteRequestExtractor:
     Extracts useful information from the Starlette request
     (like form data or cookies) and adds it to the Sentry event.
     """
-
-    request: "Request" = None
 
     def __init__(self: "StarletteRequestExtractor", request: "Request") -> None:
         self.request = request

@@ -121,7 +121,7 @@ def should_truncate_gen_ai_input(options: "Optional[dict[str, Any]]") -> bool:
         return True
 
     return not options.get(
-        "stream_gen_ai_spans", False
+        "stream_gen_ai_spans", True
     ) and not has_span_streaming_enabled(options)
 
 
@@ -434,6 +434,14 @@ def extract_sentrytrace_data(
     """
     Given a `sentry-trace` header string, return a dictionary of data.
     """
+    if not header:
+        return None
+
+    if "," in header:
+        # Multiple headers may have been combined into one comma-separated value (RFC 7230 3.2.2); use the first non-empty one.
+        parts = [part.strip() for part in header.split(",")]
+        header = next((part for part in parts if part), "")
+
     if not header:
         return None
 

@@ -1,4 +1,3 @@
-import asyncio
 import re
 import sys
 import time
@@ -212,62 +211,6 @@ def test_sampling_context(sentry_init, capture_items):
     spans = [item.payload for item in items]
 
     assert len(spans) == 1
-
-
-def test_custom_sampling_context(sentry_init):
-    class MyClass: ...
-
-    my_class = MyClass()
-
-    def traces_sampler(sampling_context):
-        assert "class" in sampling_context
-        assert "string" in sampling_context
-        assert sampling_context["class"] == my_class
-        assert sampling_context["string"] == "my string"
-        return 1.0
-
-    sentry_init(
-        traces_sampler=traces_sampler,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    sentry_sdk.get_current_scope().set_custom_sampling_context(
-        {
-            "class": my_class,
-            "string": "my string",
-        }
-    )
-
-    with sentry_sdk.traces.start_span(name="span"):
-        ...
-
-
-def test_custom_sampling_context_update_to_context_value_persists(sentry_init):
-    def traces_sampler(sampling_context):
-        if sampling_context["span_context"]["attributes"]["first"] is True:
-            assert sampling_context["custom_value"] == 1
-        else:
-            assert sampling_context["custom_value"] == 2
-        return 1.0
-
-    sentry_init(
-        traces_sampler=traces_sampler,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    sentry_sdk.traces.new_trace()
-
-    sentry_sdk.get_current_scope().set_custom_sampling_context({"custom_value": 1})
-
-    with sentry_sdk.traces.start_span(name="span", attributes={"first": True}):
-        ...
-
-    sentry_sdk.traces.new_trace()
-
-    sentry_sdk.get_current_scope().set_custom_sampling_context({"custom_value": 2})
-
-    with sentry_sdk.traces.start_span(name="span", attributes={"first": False}):
-        ...
 
 
 def test_before_send_span_basic(sentry_init, capture_items):
@@ -817,59 +760,6 @@ def test_backpressure_outcome(
         ]
 
 
-def test_unsampled_spans_produce_client_report(
-    sentry_init, capture_items, capture_record_lost_event_calls
-):
-    sentry_init(
-        traces_sample_rate=0.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-    record_lost_event_calls = capture_record_lost_event_calls()
-
-    with sentry_sdk.traces.start_span(name="segment"):
-        with sentry_sdk.traces.start_span(name="child1"):
-            pass
-        with sentry_sdk.traces.start_span(name="child2"):
-            pass
-
-    sentry_sdk.get_client().flush()
-
-    spans = [item.payload for item in items]
-    assert not spans
-
-    assert record_lost_event_calls == [
-        ("sample_rate", "span", None, 1),
-        ("sample_rate", "span", None, 1),
-        ("sample_rate", "span", None, 1),
-    ]
-
-
-def test_no_client_reports_if_tracing_is_off(
-    sentry_init, capture_items, capture_record_lost_event_calls
-):
-    sentry_init(
-        traces_sample_rate=None,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-    record_lost_event_calls = capture_record_lost_event_calls()
-
-    with sentry_sdk.traces.start_span(name="segment"):
-        with sentry_sdk.traces.start_span(name="child1"):
-            pass
-        with sentry_sdk.traces.start_span(name="child2"):
-            pass
-
-    sentry_sdk.get_client().flush()
-
-    spans = [item.payload for item in items]
-    assert not spans
-    assert not record_lost_event_calls
-
-
 def test_continue_trace_no_sample_rand(sentry_init, capture_items):
     sentry_init(
         # parent sampling decision takes precedence over traces_sample_rate
@@ -968,163 +858,6 @@ def test_outgoing_traceparent_and_baggage_when_noop_span_is_active(
         assert "sentry-trace_id" in baggage_items
         assert baggage_items["sentry-trace_id"] != noop_trace_id
         assert baggage_items["sentry-trace_id"] == propagation_trace_id
-
-
-def test_trace_decorator(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace
-    def traced_function(): ...
-
-    traced_function()
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 1
-    (span,) = spans
-
-    assert (
-        span["name"]
-        == "test_span_streaming.test_trace_decorator.<locals>.traced_function"
-    )
-    assert span["status"] == "ok"
-
-
-def test_trace_decorator_arguments(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace(name="traced", attributes={"traced.attribute": 123})
-    def traced_function(): ...
-
-    traced_function()
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 1
-    (span,) = spans
-
-    assert span["name"] == "traced"
-    assert span["attributes"]["traced.attribute"] == 123
-    assert span["status"] == "ok"
-
-
-def test_trace_decorator_inactive(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace(name="outer", active=False)
-    def traced_function():
-        with sentry_sdk.traces.start_span(name="inner"):
-            ...
-
-    traced_function()
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 2
-    (span1, span2) = spans
-
-    assert span1["name"] == "inner"
-    assert span1.get("parent_span_id") != span2["span_id"]
-
-    assert span2["name"] == "outer"
-
-
-@minimum_python_38
-def test_trace_decorator_async(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace
-    async def traced_function(): ...
-
-    asyncio.run(traced_function())
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 1
-    (span,) = spans
-
-    assert (
-        span["name"]
-        == "test_span_streaming.test_trace_decorator_async.<locals>.traced_function"
-    )
-    assert span["status"] == "ok"
-
-
-@minimum_python_38
-def test_trace_decorator_async_arguments(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace(name="traced", attributes={"traced.attribute": 123})
-    async def traced_function(): ...
-
-    asyncio.run(traced_function())
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 1
-    (span,) = spans
-
-    assert span["name"] == "traced"
-    assert span["attributes"]["traced.attribute"] == 123
-    assert span["status"] == "ok"
-
-
-@minimum_python_38
-def test_trace_decorator_async_inactive(sentry_init, capture_items):
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream"},
-    )
-
-    items = capture_items("span")
-
-    @sentry_sdk.traces.trace(name="outer", active=False)
-    async def traced_function():
-        with sentry_sdk.traces.start_span(name="inner"):
-            ...
-
-    asyncio.run(traced_function())
-
-    sentry_sdk.get_client().flush()
-    spans = [item.payload for item in items]
-
-    assert len(spans) == 2
-    (span1, span2) = spans
-
-    assert span1["name"] == "inner"
-    assert span1.get("parent_span_id") != span2["span_id"]
-
-    assert span2["name"] == "outer"
 
 
 def test_set_span_status(sentry_init, capture_items):
@@ -1722,6 +1455,7 @@ def test_default_attributes(sentry_init, capture_envelopes):
         "sentry.dist": {"value": "1.0", "type": "string"},
         "sentry.origin": {"value": "manual", "type": "string"},
         "sentry.sdk.integrations": {"value": mock.ANY, "type": "array"},
+        "sentry.trace_lifecycle": {"value": "stream", "type": "string"},
         "process.runtime.name": {
             "type": "string",
             "value": mock.ANY,
