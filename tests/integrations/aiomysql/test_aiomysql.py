@@ -213,6 +213,143 @@ async def test_execute_many(sentry_init, capture_events) -> None:
 
 
 @pytest.mark.asyncio
+async def test_execute_many_record_params_with_data_collection_enabled(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration()],
+        _experiments={"data_collection": {"database_query_data": True}},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            [
+                ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+                ("Alice", "pw", datetime.date(1990, 12, 25)),
+            ],
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {
+                "db.params": [
+                    ["Bob", "secret_pw", "datetime.date(1984, 3, 1)"],
+                    ["Alice", "pw", "datetime.date(1990, 12, 25)"],
+                ],
+                "db.paramstyle": "format",
+                "db.executemany": True,
+            },
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_many_record_params_with_data_collection_disabled(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration(record_params=True)],
+        _experiments={"data_collection": {"database_query_data": False}},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            [
+                ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+                ("Alice", "pw", datetime.date(1990, 12, 25)),
+            ],
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {"db.executemany": True},
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_many_record_params_with_data_collection_default(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration()],
+        _experiments={"data_collection": {}},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.executemany(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            [
+                ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+                ("Alice", "pw", datetime.date(1990, 12, 25)),
+            ],
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {
+                "db.params": [
+                    ["Bob", "secret_pw", "datetime.date(1984, 3, 1)"],
+                    ["Alice", "pw", "datetime.date(1990, 12, 25)"],
+                ],
+                "db.paramstyle": "format",
+                "db.executemany": True,
+            },
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_many_non_insert(sentry_init, capture_events) -> None:
     """Test executemany with non-INSERT queries (falls back to row-by-row)."""
     sentry_init(
@@ -267,6 +404,126 @@ async def test_record_params(sentry_init, capture_events) -> None:
     sentry_init(
         integrations=[AioMySQLIntegration(record_params=True)],
         _experiments={"record_sql_params": True},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {
+                "db.params": ["Bob", "secret_pw", "datetime.date(1984, 3, 1)"],
+                "db.paramstyle": "format",
+            },
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_record_params_with_data_collection_enabled(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration()],
+        _experiments={"data_collection": {"database_query_data": True}},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {
+                "db.params": ["Bob", "secret_pw", "datetime.date(1984, 3, 1)"],
+                "db.paramstyle": "format",
+            },
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_record_params_with_data_collection_disabled(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration(record_params=True)],
+        _experiments={"data_collection": {"database_query_data": False}},
+    )
+    events = capture_events()
+
+    conn = await aiomysql.connect(**_connect_args())
+
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            ("Bob", "secret_pw", datetime.date(1984, 3, 1)),
+        )
+
+    conn.close()
+
+    capture_message("hi")
+
+    (event,) = events
+
+    for crumb in event["breadcrumbs"]["values"]:
+        del crumb["timestamp"]
+
+    assert event["breadcrumbs"]["values"] == [
+        CRUMBS_CONNECT,
+        {
+            "category": "query",
+            "data": {},
+            "message": "INSERT INTO users(name, password, dob) VALUES (%s, %s, %s)",
+            "type": "default",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_record_params_with_data_collection_default(
+    sentry_init, capture_events
+) -> None:
+    sentry_init(
+        integrations=[AioMySQLIntegration()],
+        _experiments={"data_collection": {}},
     )
     events = capture_events()
 
@@ -441,9 +698,7 @@ async def test_query_source_disabled(
         "traces_sample_rate": 1.0,
         "enable_db_query_source": False,
         "db_query_source_threshold_ms": 0,
-        "_experiments": {
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        "trace_lifecycle": "stream" if span_streaming else "static",
     }
 
     sentry_init(**sentry_options)
@@ -516,9 +771,7 @@ async def test_query_source_enabled(
         "integrations": [AioMySQLIntegration()],
         "traces_sample_rate": 1.0,
         "db_query_source_threshold_ms": 0,
-        "_experiments": {
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        "trace_lifecycle": "stream" if span_streaming else "static",
     }
     if enable_db_query_source is not None:
         sentry_options["enable_db_query_source"] = enable_db_query_source
@@ -591,9 +844,7 @@ async def test_query_source(sentry_init, capture_events, capture_items, span_str
         traces_sample_rate=1.0,
         enable_db_query_source=True,
         db_query_source_threshold_ms=0,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:
@@ -692,9 +943,7 @@ async def test_no_query_source_if_duration_too_short(
         traces_sample_rate=1.0,
         enable_db_query_source=True,
         db_query_source_threshold_ms=100,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:
@@ -789,9 +1038,7 @@ async def test_query_source_if_duration_over_threshold(
         traces_sample_rate=1.0,
         enable_db_query_source=True,
         db_query_source_threshold_ms=100,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:
@@ -915,9 +1162,7 @@ async def test_span_origin(sentry_init, capture_events, capture_items, span_stre
     sentry_init(
         integrations=[AioMySQLIntegration()],
         traces_sample_rate=1.0,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:
@@ -972,9 +1217,7 @@ async def test_multiline_query_description_normalized(
     sentry_init(
         integrations=[AioMySQLIntegration()],
         traces_sample_rate=1.0,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:
@@ -1099,9 +1342,7 @@ async def test_db_data_on_spans(
     sentry_init(
         integrations=[AioMySQLIntegration()],
         traces_sample_rate=1.0,
-        _experiments={
-            "trace_lifecycle": "stream" if span_streaming else "static",
-        },
+        trace_lifecycle="stream" if span_streaming else "static",
     )
 
     if span_streaming:

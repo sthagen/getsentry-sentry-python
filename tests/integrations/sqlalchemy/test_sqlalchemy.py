@@ -26,9 +26,9 @@ def test_orm_queries(
 ):
     sentry_init(
         integrations=[SqlalchemyIntegration()],
+        trace_lifecycle="stream" if span_streaming else "static",
         _experiments={
             "record_sql_params": True,
-            "trace_lifecycle": "stream" if span_streaming else "static",
         },
     )
 
@@ -64,7 +64,7 @@ def test_orm_queries(
     if span_streaming:
         items = capture_items("event")
         capture_message("hi")
-        (event,) = (item.payload for item in items if item.type == "event")
+        (event,) = (item.payload for item in items)
     else:
         events = capture_events()
         capture_message("hi")
@@ -101,9 +101,9 @@ def test_transactions(
 ):
     sentry_init(
         integrations=[SqlalchemyIntegration()],
+        trace_lifecycle="stream" if span_streaming else "static",
         _experiments={
             "record_sql_params": True,
-            "trace_lifecycle": "stream" if span_streaming else "static",
         },
         traces_sample_rate=1.0,
     )
@@ -231,9 +231,9 @@ def test_transactions_no_engine_url(
 ):
     sentry_init(
         integrations=[SqlalchemyIntegration()],
+        trace_lifecycle="stream" if span_streaming else "static",
         _experiments={
             "record_sql_params": True,
-            "trace_lifecycle": "stream" if span_streaming else "static",
         },
         traces_sample_rate=1.0,
     )

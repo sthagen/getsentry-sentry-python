@@ -1090,10 +1090,10 @@ class Scope:
         if crumb.get("type") is None:
             crumb["type"] = "default"
 
+        new_crumb = crumb
         if before_breadcrumb is not None:
-            new_crumb = before_breadcrumb(crumb, hint)
-        else:
-            new_crumb = crumb
+            with capture_internal_exceptions():
+                new_crumb = before_breadcrumb(crumb, hint)
 
         if new_crumb is not None:
             self._breadcrumbs.append(new_crumb)
@@ -2027,10 +2027,20 @@ class Scope:
         """
         Set an attribute on the scope.
 
-        Any attributes-based telemetry (logs, metrics) captured while this scope
-        is active will inherit attributes set on the scope.
+        Any attributes-based telemetry (logs, metrics, streamed spans) captured
+        while this scope is active will inherit attributes set on the scope.
         """
         self._attributes[attribute] = format_attribute(value)
+
+    def set_attributes(self, attributes: "dict[str, AttributeValue]") -> None:
+        """
+        Set multiple attributes on the scope.
+
+        Any attributes-based telemetry (logs, metrics, streamed spans) captured
+        while this scope is active will inherit attributes set on the scope.
+        """
+        for attribute, value in attributes.items():
+            self.set_attribute(attribute, value)
 
     def remove_attribute(self, attribute: str) -> None:
         """Remove an attribute if set on the scope. No-op if there is no such attribute."""

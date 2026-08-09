@@ -472,6 +472,21 @@ if TYPE_CHECKING:
         type: Literal["text"]
         content: str
 
+    class ReasoningPart(TypedDict):
+        type: Literal["reasoning"]
+        content: str
+
+    class ToolCallPart(TypedDict):
+        type: Literal["tool_call"]
+        name: NotRequired[str]
+        arguments: NotRequired[Any]
+
+    class ToolDefinition(TypedDict):
+        type: str
+        name: NotRequired[str]
+        description: NotRequired[str]
+        parameters: NotRequired[dict[str, object]]
+
     IgnoreSpansName = Union[str, Pattern[str]]
     IgnoreSpansContext = TypedDict(
         "IgnoreSpansContext",

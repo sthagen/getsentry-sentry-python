@@ -44,7 +44,6 @@ if TYPE_CHECKING:
 
 
 try:
-    from langchain_core.agents import AgentFinish
     from langchain_core.callbacks import (
         BaseCallbackHandler,
         BaseCallbackManager,
@@ -52,7 +51,7 @@ try:
         manager,
     )
     from langchain_core.messages import BaseMessage
-    from langchain_core.outputs import LLMResult
+    from langchain_core.outputs import ChatGeneration, LLMResult
 
 except ImportError:
     raise DidNotEnable("langchain not installed")
@@ -247,7 +246,7 @@ class LangchainIntegration(Integration):
         _patch_embeddings_provider(OllamaEmbeddings)
 
 
-class SentryLangchainCallback(BaseCallbackHandler):  # type: ignore[misc]
+class SentryLangchainCallback(BaseCallbackHandler):
     """Callback handler that creates Sentry spans."""
 
     def __init__(
@@ -561,44 +560,32 @@ class SentryLangchainCallback(BaseCallbackHandler):  # type: ignore[misc]
             except IndexError:
                 generation = None
 
-            if generation is not None:
-                set_on_span = (
-                    span.set_attribute
-                    if isinstance(span, StreamedSpan)
-                    else span.set_data
-                )
+            set_on_span = (
+                span.set_attribute if isinstance(span, StreamedSpan) else span.set_data
+            )
 
-                try:
-                    response_model = generation.message.response_metadata.get(
-                        "model_name"
+            if generation is not None and generation.generation_info is not None:
+                finish_reason = generation.generation_info.get("finish_reason")
+                if finish_reason is not None:
+                    set_on_span(
+                        SPANDATA.GEN_AI_RESPONSE_FINISH_REASONS,
+                        [finish_reason],
                     )
-                    if response_model is not None:
-                        set_on_span(SPANDATA.GEN_AI_RESPONSE_MODEL, response_model)
-                except AttributeError:
-                    pass
 
-                try:
-                    finish_reason = generation.generation_info.get("finish_reason")
-                    if finish_reason is not None:
-                        set_on_span(
-                            SPANDATA.GEN_AI_RESPONSE_FINISH_REASONS,
-                            [finish_reason],
+            if isinstance(generation, ChatGeneration):
+                response_model = generation.message.response_metadata.get("model_name")
+                if response_model is not None:
+                    set_on_span(SPANDATA.GEN_AI_RESPONSE_MODEL, response_model)
+
+                if should_send_default_pii() and self.include_prompts:
+                    tool_calls = getattr(generation.message, "tool_calls", None)
+                    if tool_calls is not None and tool_calls != []:
+                        set_data_normalized(
+                            span,
+                            SPANDATA.GEN_AI_RESPONSE_TOOL_CALLS,
+                            tool_calls,
+                            unpack=False,
                         )
-                except AttributeError:
-                    pass
-
-                try:
-                    if should_send_default_pii() and self.include_prompts:
-                        tool_calls = getattr(generation.message, "tool_calls", None)
-                        if tool_calls is not None and tool_calls != []:
-                            set_data_normalized(
-                                span,
-                                SPANDATA.GEN_AI_RESPONSE_TOOL_CALLS,
-                                tool_calls,
-                                unpack=False,
-                            )
-                except AttributeError:
-                    pass
 
             if should_send_default_pii() and self.include_prompts:
                 set_data_normalized(
@@ -612,7 +599,7 @@ class SentryLangchainCallback(BaseCallbackHandler):  # type: ignore[misc]
 
     def on_llm_error(
         self: "SentryLangchainCallback",
-        error: "Union[Exception, KeyboardInterrupt]",
+        error: "BaseException",
         *,
         run_id: "UUID",
         **kwargs: "Any",
@@ -629,26 +616,6 @@ class SentryLangchainCallback(BaseCallbackHandler):  # type: ignore[misc]
     ) -> "Any":
         """Run when Chat Model errors."""
         self._handle_error(run_id, error)
-
-    def on_agent_finish(
-        self: "SentryLangchainCallback",
-        finish: "AgentFinish",
-        *,
-        run_id: "UUID",
-        **kwargs: "Any",
-    ) -> "Any":
-        with capture_internal_exceptions():
-            if not run_id or run_id not in self.span_map:
-                return
-
-            span = self.span_map[run_id]
-
-            if should_send_default_pii() and self.include_prompts:
-                set_data_normalized(
-                    span, SPANDATA.GEN_AI_RESPONSE_TEXT, finish.return_values.items()
-                )
-
-            self._exit_span(span, run_id)
 
     def on_tool_start(
         self: "SentryLangchainCallback",
@@ -719,8 +686,8 @@ class SentryLangchainCallback(BaseCallbackHandler):  # type: ignore[misc]
 
     def on_tool_error(
         self,
-        error: "SentryLangchainCallback",
-        *args: "Union[Exception, KeyboardInterrupt]",
+        error: "BaseException",
+        *,
         run_id: "UUID",
         **kwargs: "Any",
     ) -> "Any":
