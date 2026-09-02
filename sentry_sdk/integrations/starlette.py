@@ -184,8 +184,20 @@ def _enable_span_for_middleware(
         if integration is None:
             return await old_call(app, scope, receive, send, **kwargs)
 
+        route_path, name_source = _http_route_and_source_from_router(scope)
+
+        server_span = sentry_sdk.get_current_scope()._server_segment_span
+        if (
+            server_span is not None
+            and route_path is not None
+            and name_source == TransactionSource.ROUTE
+        ):
+            server_span.set_attribute(SPANDATA.HTTP_ROUTE, route_path)
+
         # Update transaction name with middleware name
-        name, source = _get_transaction_from_middleware(app, scope, integration)
+        name, source = _get_transaction_from_middleware(
+            app, integration, route_path=route_path, name_source=name_source
+        )
 
         if name is not None:
             sentry_sdk.get_current_scope().set_transaction_name(
@@ -541,10 +553,22 @@ async def _wrap_async_handler(
 
     request = args[0]
 
+    route_path, name_source = _http_route_and_source_from_router(request.scope)
+
+    server_span = sentry_sdk.get_current_scope()._server_segment_span
+    if (
+        server_span is not None
+        and route_path is not None
+        and name_source == TransactionSource.ROUTE
+    ):
+        server_span.set_attribute(SPANDATA.HTTP_ROUTE, route_path)
+
     _set_transaction_name_and_source(
         sentry_sdk.get_current_scope(),
         integration.transaction_style,
-        request,
+        endpoint=request.scope.get("endpoint"),
+        route_path=route_path,
+        name_source=name_source,
     )
 
     sentry_scope = sentry_sdk.get_isolation_scope()
@@ -562,7 +586,15 @@ async def _wrap_async_handler(
                 if "cookies" in info:
                     request_info["cookies"] = info["cookies"]
                 if "data" in info:
-                    request_info["data"] = info["data"]
+                    attach_request_data = True
+                    if has_data_collection_enabled(client.options):
+                        attach_request_data = (
+                            "incoming_request"
+                            in client.options["data_collection"]["http_bodies"]
+                        )
+
+                    if attach_request_data:
+                        request_info["data"] = info["data"]
             event["request"] = deepcopy(request_info)
 
             return event
@@ -580,14 +612,22 @@ async def _wrap_async_handler(
         current_span = get_current_span()
 
         if type(current_span) is StreamedSpan:
-            request_body = _get_cached_request_body_attribute(
-                client=client, request=request
-            )
-            if request_body:
-                current_span._segment.set_attribute(
-                    SPANDATA.HTTP_REQUEST_BODY_DATA,
-                    request_body,
+            attach_request_data = True
+            if has_data_collection_enabled(client.options):
+                attach_request_data = (
+                    "incoming_request"
+                    in client.options["data_collection"]["http_bodies"]
                 )
+
+            if attach_request_data:
+                request_body = _get_cached_request_body_attribute(
+                    client=client, request=request
+                )
+                if request_body:
+                    current_span._segment.set_attribute(
+                        SPANDATA.HTTP_REQUEST_BODY_DATA,
+                        request_body,
+                    )
 
 
 def patch_request_response() -> None:
@@ -631,8 +671,24 @@ def patch_request_response() -> None:
 
                 request = args[0]
 
+                route_path, name_source = _http_route_and_source_from_router(
+                    request.scope
+                )
+
+                server_span = sentry_sdk.get_current_scope()._server_segment_span
+                if (
+                    server_span is not None
+                    and route_path is not None
+                    and name_source == TransactionSource.ROUTE
+                ):
+                    server_span.set_attribute(SPANDATA.HTTP_ROUTE, route_path)
+
                 _set_transaction_name_and_source(
-                    sentry_scope, integration.transaction_style, request
+                    current_scope,
+                    integration.transaction_style,
+                    endpoint=request.scope.get("endpoint"),
+                    route_path=route_path,
+                    name_source=name_source,
                 )
 
                 extractor = StarletteRequestExtractor(request)
@@ -827,36 +883,41 @@ class StarletteRequestExtractor:
             return None
 
 
-def _transaction_name_from_router(scope: "StarletteScope") -> "Optional[str]":
+def _http_route_and_source_from_router(
+    scope: "StarletteScope",
+) -> "Tuple[Optional[str], TransactionSource]":
     router = scope.get("router")
     if not router:
-        return None
+        return None, TransactionSource.ROUTE
 
     for route in router.routes:
         match = route.matches(scope)
         if match[0] == Match.FULL:
             try:
-                return route.path
+                return route.path, TransactionSource.ROUTE
             except AttributeError:
-                # routes added via app.host() won't have a path attribute
-                return scope.get("path")
+                # Host routes have no path template, so fall back to the
+                # concrete request path and classify it as a URL.
+                return scope.get("path"), TransactionSource.URL
 
-    return None
+    return None, TransactionSource.ROUTE
 
 
 def _set_transaction_name_and_source(
-    scope: "sentry_sdk.Scope", transaction_style: str, request: "Any"
+    scope: "sentry_sdk.Scope",
+    transaction_style: str,
+    endpoint: "Optional[Callable[..., Any]]",
+    route_path: "Optional[str]",
+    name_source: "TransactionSource",
 ) -> None:
     name = None
     source = SOURCE_FOR_STYLE[transaction_style]
 
-    if transaction_style == "endpoint":
-        endpoint = request.scope.get("endpoint")
-        if endpoint:
-            name = transaction_from_function(endpoint) or None
+    if transaction_style == "endpoint" and endpoint:
+        name = transaction_from_function(endpoint) or None
 
     elif transaction_style == "url":
-        name = _transaction_name_from_router(request.scope)
+        name, source = route_path, name_source
 
     if name is None:
         name = _DEFAULT_TRANSACTION_NAME
@@ -866,7 +927,10 @@ def _set_transaction_name_and_source(
 
 
 def _get_transaction_from_middleware(
-    app: "Any", asgi_scope: "Dict[str, Any]", integration: "StarletteIntegration"
+    app: "Any",
+    integration: "StarletteIntegration",
+    route_path: "Optional[str]",
+    name_source: "TransactionSource",
 ) -> "Tuple[Optional[str], Optional[str]]":
     name = None
     source = None
@@ -875,7 +939,6 @@ def _get_transaction_from_middleware(
         name = transaction_from_function(app.__class__)
         source = TransactionSource.COMPONENT
     elif integration.transaction_style == "url":
-        name = _transaction_name_from_router(asgi_scope)
-        source = TransactionSource.ROUTE
+        name, source = route_path, name_source
 
     return name, source

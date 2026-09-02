@@ -878,6 +878,12 @@ class SPANDATA:
     Example: GET
     """
 
+    HTTP_ROUTE = "http.route"
+    """
+    The matched route, that is, the path template used to match the request.
+    Example: /users/{id}
+    """
+
     HTTP_QUERY = "http.query"
     """
     The Query string present in the URL.
@@ -1840,4 +1846,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "2.68.0"
+VERSION = "2.68.1"
