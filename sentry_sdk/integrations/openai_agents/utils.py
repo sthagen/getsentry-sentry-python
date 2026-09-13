@@ -2,10 +2,10 @@ import json
 from typing import TYPE_CHECKING
 
 import sentry_sdk
-from sentry_sdk.ai._openai_completions_api import _transform_system_instructions
 from sentry_sdk.ai._openai_responses_api import (
     _get_system_instructions,
     _is_system_instruction,
+    _transform_system_instructions,
 )
 from sentry_sdk.ai.utils import (
     GEN_AI_ALLOWED_MESSAGE_ROLES,
@@ -26,7 +26,7 @@ from sentry_sdk.utils import (
 )
 
 if TYPE_CHECKING:
-    from typing import Any, Union
+    from typing import Any, Optional, Union
 
     from agents import TResponseInputItem, Usage
 
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 try:
     import agents
-
+    from agents import Model
 except ImportError:
     raise DidNotEnable("OpenAI Agents not installed")
 
@@ -64,10 +64,11 @@ def _set_agent_data(
     if agent.model_settings.max_tokens:
         set_on_span(SPANDATA.GEN_AI_REQUEST_MAX_TOKENS, agent.model_settings.max_tokens)
 
-    # Get model name from agent.model or fall back to request model (for when agent.model is None/default)
-    model_name = None
-    if agent.model:
-        model_name = agent.model.model if hasattr(agent.model, "model") else agent.model
+    model_name: "Optional[str]" = None
+    if isinstance(agent.model, Model) and hasattr(agent.model, "model"):
+        model_name = agent.model.model
+    elif isinstance(agent.model, str):
+        model_name = agent.model
     elif hasattr(agent, "_sentry_request_model"):
         model_name = agent._sentry_request_model
 
@@ -140,8 +141,6 @@ def _set_input_data(
 
     system_instructions = _get_system_instructions(messages)
 
-    # Deliberate use of function accepting completions API type because
-    # of shared structure FOR THIS PURPOSE ONLY.
     instructions_text_parts += _transform_system_instructions(system_instructions)
 
     if len(instructions_text_parts) > 0:
@@ -157,7 +156,9 @@ def _set_input_data(
             )
 
     non_system_messages = [
-        message for message in messages if not _is_system_instruction(message)
+        message
+        for message in messages
+        if not _is_system_instruction(message)  # type: ignore[arg-type]
     ]
     for message in non_system_messages:
         if "role" in message:
