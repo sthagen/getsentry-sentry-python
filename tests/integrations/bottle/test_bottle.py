@@ -166,6 +166,39 @@ def test_large_json_request(
         assert len(event["request"]["data"]["foo"]["bar"]) == 1034
 
 
+def test_attach_stacktrace_doesnt_hang(sentry_init, capture_events, app, get_client):
+    sentry_init(
+        integrations=[BottleIntegration()],
+        max_request_body_size="always",
+        attach_stacktrace=True,
+    )
+
+    data = {"foo": {"bar": "a" * (1024)}}
+
+    @app.route("/", method="POST")
+    def index():
+        import bottle
+
+        assert bottle.request.json == data
+        assert bottle.request.body.read() == json.dumps(data).encode("ascii")
+        capture_message("hi")
+        return "ok"
+
+    events = capture_events()
+
+    client = get_client()
+    response = client.get("/")
+
+    response = client.post("/", content_type="application/json", data=json.dumps(data))
+    assert response[1] == "200 OK"
+
+    (event,) = events
+
+    # As long as this test finishes, we're good. It's just making sure we don't
+    # hang.
+    assert event["request"]["data"]
+
+
 @pytest.mark.parametrize("data", [{}, []], ids=["empty-dict", "empty-list"])
 def test_empty_json_request(sentry_init, capture_events, app, data, get_client):
     sentry_init(integrations=[BottleIntegration()])
@@ -860,7 +893,7 @@ def test_request_body_data_collection(
 ):
     sentry_init(
         integrations=[BottleIntegration()],
-        _experiments={"data_collection": data_collection},
+        data_collection=data_collection,
     )
 
     data = {"foo": "bar"}
@@ -889,7 +922,7 @@ def test_request_body_dropped_with_form_and_files_data_collection(
     sentry_init(
         integrations=[BottleIntegration()],
         max_request_body_size="always",
-        _experiments={"data_collection": {"http_bodies": []}},
+        data_collection={"http_bodies": []},
     )
 
     data = {
@@ -923,7 +956,7 @@ def test_transaction_request_body_data_collection(
     sentry_init(
         integrations=[BottleIntegration()],
         traces_sample_rate=1.0,
-        _experiments={"data_collection": {"http_bodies": []}},
+        data_collection={"http_bodies": []},
     )
 
     data = {"username": "sentry-user", "age": "26"}
@@ -954,7 +987,7 @@ def test_oversized_request_body_not_annotated_data_collection(
     sentry_init(
         integrations=[BottleIntegration()],
         max_request_body_size="small",
-        _experiments={"data_collection": {"http_bodies": []}},
+        data_collection={"http_bodies": []},
     )
 
     data = "a" * 2000

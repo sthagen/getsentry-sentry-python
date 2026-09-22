@@ -1316,6 +1316,7 @@ class ClientConstructor:
         transport_queue_size: int = DEFAULT_QUEUE_SIZE,
         sample_rate: float = 1.0,
         send_default_pii: "Optional[bool]" = None,
+        data_collection: "Optional[DataCollectionUserOptions]" = None,
         http_proxy: "Optional[str]" = None,
         https_proxy: "Optional[str]" = None,
         ignore_errors: "Sequence[Union[type, str]]" = [],  # noqa: B006
@@ -1337,7 +1338,7 @@ class ClientConstructor:
         profile_lifecycle: 'Literal["manual", "trace"]' = "manual",
         profile_session_sample_rate: "Optional[float]" = None,
         auto_enabling_integrations: bool = True,
-        disabled_integrations: "Optional[Sequence[sentry_sdk.integrations.Integration]]" = None,
+        disabled_integrations: "Optional[Sequence[Union[sentry_sdk.integrations.Integration, type[sentry_sdk.integrations.Integration]]]]" = None,
         auto_session_tracking: bool = True,
         send_client_reports: bool = True,
         _experiments: "Experiments" = {},  # noqa: B006
@@ -1471,6 +1472,23 @@ class ClientConstructor:
 
             If you enable this option, be sure to manually remove what you don't want to send using our features for
             managing `Sensitive Data <https://docs.sentry.io/data-management/sensitive-data/>`_.
+
+        :param data_collection: Structured configuration controlling what data integrations collect
+            automatically, superseding `send_default_pii`. Passing a dict opts into the feature; omitted
+            fields use their defaults (most categories are collected, with the sensitive denylist
+            scrubbing values). When it is not set, the SDK derives behaviour from `send_default_pii` so
+            that upgrading changes nothing. Restrict collection per category (user identity, cookies,
+            HTTP headers/bodies, query params, generative AI inputs/outputs, stack frame variables,
+            source context). If `send_default_pii` is also set, `data_collection` takes precedence.
+
+            Example::
+
+                sentry_sdk.init(
+                    dsn="...",
+                    data_collection={"user_info": False, "http_bodies": []},
+                )
+
+            See https://docs.sentry.io/platforms/python/configuration/options/#data_collection for more details.
 
         :param event_scrubber: Scrubs the event payload for sensitive information such as cookies, sessions, and
             passwords from a `denylist`.
@@ -1807,24 +1825,6 @@ class ClientConstructor:
             `trace_lifecycle="stream"` is enabled.
 
         :param _experiments: Dictionary of experimental, opt-in features that are not yet stable.
-
-            ``data_collection`` (EXPERIMENTAL): structured configuration controlling what data integrations
-            collect automatically, superseding `send_default_pii`. Passing a dict under
-            `_experiments={"data_collection": {...}}` opts into the feature; omitted fields use their
-            defaults (most categories are collected, with the sensitive denylist scrubbing values).
-            When it is not set, the SDK derives behaviour from `send_default_pii` so that upgrading
-            changes nothing. Restrict collection per category (user identity, cookies, HTTP
-            headers/bodies, query params, generative AI inputs/outputs, stack frame variables, source
-            context). If `send_default_pii` is also set, `data_collection` takes precedence.
-
-            Example::
-
-                sentry_sdk.init(
-                    dsn="...",
-                    _experiments={"data_collection": {"user_info": False, "http_bodies": []}},
-                )
-
-            See https://docs.sentry.io/platforms/python/configuration/options/#data_collection for more details.
         """
         pass
 
@@ -1848,4 +1848,4 @@ DEFAULT_OPTIONS = _get_default_options()
 del _get_default_options
 
 
-VERSION = "2.69.1"
+VERSION = "2.70.0"

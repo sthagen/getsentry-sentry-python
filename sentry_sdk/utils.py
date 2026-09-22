@@ -1,4 +1,3 @@
-import base64
 import copy
 import json
 import linecache
@@ -65,6 +64,7 @@ if TYPE_CHECKING:
 
     from sentry_sdk._types import (
         AttributeValue,
+        DataCollection,
         Event,
         ExcInfo,
         Hint,
@@ -84,8 +84,6 @@ epoch = datetime(1970, 1, 1)
 logger = logging.getLogger("sentry_sdk.errors")
 
 _installed_modules = None
-
-BASE64_ALPHABET = re.compile(r"^[a-zA-Z0-9/+=]*$")
 
 FALSY_ENV_VALUES = frozenset(("false", "f", "n", "no", "off", "0"))
 TRUTHY_ENV_VALUES = frozenset(("true", "t", "y", "yes", "on", "1"))
@@ -1620,43 +1618,6 @@ class TimeoutThread(threading.Thread):
         )
 
 
-def to_base64(original: str) -> "Optional[str]":
-    """
-    Convert a string to base64, via UTF-8. Returns None on invalid input.
-    """
-    base64_string = None
-
-    try:
-        utf8_bytes = original.encode("UTF-8")
-        base64_bytes = base64.b64encode(utf8_bytes)
-        base64_string = base64_bytes.decode("UTF-8")
-    except Exception as err:
-        logger.warning("Unable to encode {orig} to base64:".format(orig=original), err)
-
-    return base64_string
-
-
-def from_base64(base64_string: str) -> "Optional[str]":
-    """
-    Convert a string from base64, via UTF-8. Returns None on invalid input.
-    """
-    utf8_string = None
-
-    try:
-        only_valid_chars = BASE64_ALPHABET.match(base64_string)
-        assert only_valid_chars
-
-        base64_bytes = base64_string.encode("UTF-8")
-        utf8_bytes = base64.b64decode(base64_bytes)
-        utf8_string = utf8_bytes.decode("UTF-8")
-    except Exception as err:
-        logger.warning(
-            "Unable to decode {b64} from base64:".format(b64=base64_string), err
-        )
-
-    return utf8_string
-
-
 Components = namedtuple("Components", ["scheme", "netloc", "path", "query", "fragment"])
 
 
@@ -2149,7 +2110,13 @@ def has_data_collection_enabled(options: "Optional[dict[str, Any]]") -> bool:
     if options is None:
         return False
 
-    return "data_collection" in options.get("_experiments", {})
+    data_collection: "Optional[DataCollection]" = options.get("data_collection")
+    # Client options are resolved as part of client initialization, so `data_collection`
+    # being None could be that the user just didn't provide it.
+    # `provided_by_user` is what actually records whether the user actually configured it.
+    return data_collection is not None and data_collection.get(
+        "provided_by_user", False
+    )
 
 
 def get_before_send_log(
