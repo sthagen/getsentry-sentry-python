@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections import namedtuple
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -99,6 +100,9 @@ the stacktrace to avoid getting stuck in a long-lasting loop. This value
 exceeds the default sys.getrecursionlimit() of 1000, so users will only
 be affected by this limit if they have a custom recursion limit.
 """
+
+_LOCAL_IPS = frozenset({"127.0.0.1", "::1"})
+_LOCAL_DOMAINS = _LOCAL_IPS.union({"localhost"})
 
 
 def env_to_bool(value: "Any", *, strict: "Optional[bool]" = False) -> "bool | None":
@@ -2205,7 +2209,57 @@ def serialize_attribute(val: "AttributeValue") -> "SerializedAttributeValue":
     return {"value": safe_repr(val), "type": "string"}
 
 
+def _host_matches_local_domain(host: str) -> bool:
+    """Check if host matches a local domain, including subdomains like foo.localhost."""
+    if host in _LOCAL_DOMAINS:
+        return True
+    for domain in _LOCAL_DOMAINS:
+        if host.endswith("." + domain):
+            return True
+    return False
+
+
+def _is_localhost(
+    client_ip: "Optional[str]" = None,
+    url_host: "Optional[str]" = None,
+    host_header: "Optional[str]" = None,
+    forwarded_host_header: "Optional[str]" = None,
+) -> bool:
+    """
+    Determine if a request originates from localhost.
+
+    Based on the logic in relay's localhost filter.
+    """
+    if client_ip is not None and client_ip.strip("[]") in _LOCAL_IPS:
+        return True
+
+    # URL host uses subdomain-aware matching
+    if url_host is not None and _host_matches_local_domain(url_host):
+        return True
+
+    for header in (host_header, forwarded_host_header):
+        if header is not None:
+            if header.startswith("["):
+                # Bracketed IPv6, e.g. [::1]:8080 or [::1]
+                domain = header.split("]")[0].strip("[]")
+            else:
+                domain = header.split(":")[0]
+            if _host_matches_local_domain(domain):
+                return True
+
+    return False
+
+
 # This noop context manager can be replaced with "from contextlib import nullcontext" when we drop Python 3.6 support
 @contextmanager
 def nullcontext() -> "Iterator[None]":
     yield
+
+
+def deprecation_warning(msg: str) -> None:
+    """
+    Emit a warnings.warn about a deprecation.
+
+    For other types of warnings, use logger.warning().
+    """
+    warnings.warn(msg, stacklevel=3, category=DeprecationWarning)
